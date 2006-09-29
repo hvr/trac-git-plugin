@@ -79,8 +79,8 @@ class Storage:
             yield rev.strip()
 
     def last_change(self, sha, path):
-        for rev in self.history(sha, path):
-            return rev
+        for rev in self._git_call_f("git-rev-list --max-count=1 %s -- '%s'" % (sha,path)).readlines():
+            return rev.strip()
         return None
 
     def diff_tree(self, tree1, tree2, path=""):
