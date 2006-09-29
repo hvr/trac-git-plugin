@@ -14,12 +14,15 @@
 
 import os, re
 
-class GIT:
+class GitError(Exception):
+    pass
+
+class Storage:
     def __init__(self,repo):
         self.repo = repo
 
     def _git_call_f(self,cmd):
-        #print cmd
+        #print "GIT: "+cmd
         (input, output, error) = os.popen3('GIT_DIR="%s" %s' % (self.repo,cmd))
         return output
 
@@ -51,6 +54,9 @@ class GIT:
 
     def get_file(self, sha):
         return self._git_call_f("git-cat-file blob "+sha)
+
+    def get_obj_size(self, sha):
+        return int(self._git_call("git-cat-file -s "+sha).strip())
 
     def parents(self, sha):
         tmp=self._git_call("git-rev-list --max-count=1 --parents "+sha)

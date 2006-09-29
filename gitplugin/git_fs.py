@@ -31,7 +31,7 @@ class GitConnector(Component):
 class GitRepository(Repository):
 	def __init__(self, path, log):
 		self.gitrepo = path
-		self.git = PyGIT.GIT(path)
+		self.git = PyGIT.Storage(path)
 		Repository.__init__(self, "git:"+path, None, log)
 
 	def get_youngest_rev(self):
@@ -110,14 +110,19 @@ class GitRepository(Repository):
 
 
 class GitNode(Node):
-	def __init__(self, git, path, rev):
+	def __init__(self, git, path, rev, tree_ls_info=None):
 		self.git = git
-		self.sha = rev;
-		self.perm = None;
+		self.sha = rev
+		self.perm = None
+		self.data_len = None
+		
 		kind = Node.DIRECTORY
 		p = path.strip('/')
 		if p != "":
-			[(self.perm,k,self.sha,fn)]=git.tree_ls(rev, p)
+			if tree_ls_info:
+				(self.perm,k,self.sha,fn)=tree_ls_info
+			else:
+				[(self.perm,k,self.sha,fn)]=git.tree_ls(rev, p)
 			rev=self.git.last_change(rev, p)
 			if k=='tree':
 				pass
@@ -152,7 +157,7 @@ class GitNode(Node):
 		p = self.path.strip('/')
 		if p != '': p = p + '/'
 		for e in self.git.tree_ls(self.rev, p):
-			yield GitNode(self.git, e[3], self.rev)
+			yield GitNode(self.git, e[3], self.rev, e)
 	
 	def get_content_type(self):
 		if self.isdir:
@@ -161,7 +166,9 @@ class GitNode(Node):
 
 	def get_content_length(self):
 		if self.isfile:
-			return len(self.get_content().read())
+			if not self.data_len:
+				self.data_len = self.git.get_obj_size(self.sha)
+			return self.data_len
 		return None
 
 	def get_history(self, limit=None):
