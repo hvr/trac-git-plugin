@@ -20,6 +20,7 @@ class GitError(Exception):
 class Storage:
     def __init__(self,repo):
         self.repo = repo
+        self.commit_encoding = None
 
     def _git_call_f(self,cmd):
         #print "GIT: "+cmd
@@ -28,6 +29,13 @@ class Storage:
 
     def _git_call(self,cmd):
         return self._git_call_f(cmd).read()
+
+    def get_commit_encoding(self):
+        if self.commit_encoding is None:
+            self.commit_encoding = self._git_call("git-repo-config --get i18n.commitEncoding").strip()
+            if ''==self.commit_encoding:
+                self.commit_encoding = 'utf-8'
+        return self.commit_encoding
 
     def head(self):
         return self._git_call("git-rev-parse --verify HEAD").strip()
@@ -39,6 +47,7 @@ class Storage:
 
     def read_commit(self, sha):
         raw = self._git_call("git-cat-file commit "+sha)
+        raw = unicode(raw, self.get_commit_encoding(), 'replace')
         lines = raw.splitlines()
 
         line = lines.pop(0)
@@ -97,7 +106,7 @@ class Storage:
 if __name__ == '__main__':
     import sys
     
-    g = GIT(sys.argv[1])
+    g = Storage(sys.argv[1])
     
     print "[%s]" % g.head()
     print g.tree_ls(g.head())
@@ -106,3 +115,5 @@ if __name__ == '__main__':
     print "--------------"
     print g.parents(g.head())
 
+    print "--------------"
+    print g.get_commit_encoding()
