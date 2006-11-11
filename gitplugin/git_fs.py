@@ -15,7 +15,7 @@
 from trac.core import *
 from trac.util import TracError, shorten_line, escape
 from trac.versioncontrol import Changeset, Node, Repository, \
-                                IRepositoryConnector
+                                IRepositoryConnector, NoSuchChangeset, NoSuchNode
 
 import PyGIT
 
@@ -43,7 +43,13 @@ class GitRepository(Repository):
 	def normalize_rev(self, rev):
 		if rev=='None' or rev == None or rev == '':
 			return self.get_youngest_rev()
-		return rev
+		normrev=self.git.verifyrev(rev)
+		if normrev is None:
+			raise NoSuchChangeset(rev)
+		return normrev
+
+	def short_rev(self, rev):
+		return self.git.shortrev(self.normalize_rev(rev))
 
 	def get_oldest_rev(self):
 		return ""

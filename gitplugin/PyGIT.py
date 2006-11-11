@@ -13,6 +13,7 @@
 # GNU General Public License for more details.
 
 import os, re
+#from traceback import print_stack
 
 class GitError(Exception):
     pass
@@ -38,7 +39,30 @@ class Storage:
         return self.commit_encoding
 
     def head(self):
-        return self._git_call("git-rev-parse --verify HEAD").strip()
+        "get current HEAD commit id"
+        return self.verifyrev("HEAD")
+
+    def verifyrev(self,rev):
+        "verify/lookup given revision object and return a sha id or None if lookup failed"
+        rc=self._git_call("git-rev-parse --verify '%s'" % rev).strip()
+        if len(rc)==0:
+            return None
+        return rc
+
+    def shortrev(self,rev):
+        "try to shorten sha id"
+        return self._git_call("git-rev-parse --short '%s'" % rev).strip()
+
+    def get_branches(self):
+        "returns list of branches, with active (i.e. HEAD) one being the first item"
+        result=[]
+        for e in self._git_call_f("git-branch").readlines():
+            bname=e[1:].strip()
+            if e[0]=='*':
+                result.insert(0,bname)
+            else:
+                result.append(bname)
+        return result
 
     def tree_ls(self,sha,path=""):
         if len(path)>0 and path[0]=='/':
@@ -117,3 +141,5 @@ if __name__ == '__main__':
 
     print "--------------"
     print g.get_commit_encoding()
+    print "--------------"
+    print g.get_branches()
