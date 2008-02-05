@@ -182,6 +182,8 @@ class GitNode(Node):
 		for rev in self.git.history(self.rev, p):
 			yield (self.path, rev, Changeset.EDIT)
 
+	def get_last_modified(self):
+		return None
 
 class GitChangeset(Changeset):
 	def __init__(self, git, sha):
