@@ -1,6 +1,6 @@
 # -*- coding: iso-8859-1 -*-
 #
-# Copyright (C) 2006 Herbert Valerio Riedel <hvr@gnu.org>
+# Copyright (C) 2006,2008 Herbert Valerio Riedel <hvr@gnu.org>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -16,6 +16,9 @@ import os, re
 #from traceback import print_stack
 
 class GitError(Exception):
+    pass
+
+class GitErrorSha(GitError):
     pass
 
 class Storage:
@@ -74,6 +77,9 @@ class Storage:
         raw = unicode(raw, self.get_commit_encoding(), 'replace')
         lines = raw.splitlines()
 
+        if not lines:
+            raise GitErrorSha
+
         line = lines.pop(0)
         d = {}
         while line != "":
@@ -103,13 +109,29 @@ class Storage:
             revs = revs.split()
             if sha in revs[1:]:
                 yield revs[0]
-        
-    def history(self, sha, path, skip=0):
-        for rev in self._git_call_f("git-rev-list %s -- '%s'" % (sha,path)).readlines():
+
+    def history(self, sha, path, limit=None, skip=0):
+        #print "history", sha, path, limit, skip
+        if limit is None:
+            limit = -1
+        for rev in self._git_call_f("git-rev-list -n%d %s -- '%s'" % (limit,sha,path)).readlines():
             if(skip > 0):
                 skip = skip - 1
                 continue
             yield rev.strip()
+
+    def history_all(self, start, stop):
+        for rev in self._git_call_f("git-rev-list --reverse --max-age=%d --min-age=%d --all" \
+                                        % (start,stop)).readlines():
+            yield rev.strip()
+
+    def rev_is_anchestor(self, rev1, rev2):
+        rev1 = rev1.strip()
+        rev2 = rev2.strip()
+        for rev in self._git_call_f("git-rev-list %s ^%s^" % (rev2,rev1)).readlines():
+            if rev1 == rev.strip():
+                return True
+        return False
 
     def last_change(self, sha, path):
         for rev in self._git_call_f("git-rev-list --max-count=1 %s -- '%s'" % (sha,path)).readlines():
@@ -129,9 +151,9 @@ class Storage:
 
 if __name__ == '__main__':
     import sys
-    
+
     g = Storage(sys.argv[1])
-    
+
     print "[%s]" % g.head()
     print g.tree_ls(g.head())
     print "--------------"

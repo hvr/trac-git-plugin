@@ -1,6 +1,6 @@
 # -*- coding: iso-8859-1 -*-
 #
-# Copyright (C) 2006 Herbert Valerio Riedel <hvr@gnu.org>
+# Copyright (C) 2006,2008 Herbert Valerio Riedel <hvr@gnu.org>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -26,10 +26,11 @@ class GitConnector(Component):
 		yield ("git", 8)
 
 	def get_repository(self, type, dir, authname):
-		return GitRepository(dir, self.log)
+		options = dict(self.config.options(type))
+		return GitRepository(dir, self.log, options)
 
 class GitRepository(Repository):
-	def __init__(self, path, log):
+	def __init__(self, path, log, options):
 		self.gitrepo = path
 		self.git = PyGIT.Storage(path)
 		Repository.__init__(self, "git:"+path, None, log)
@@ -58,6 +59,11 @@ class GitRepository(Repository):
 		#print "get_node", path, rev
 		return GitNode(self.git, path, rev)
 
+	def get_changesets(self, start, stop):
+		#print "get_changesets", start, stop
+		for rev in self.git.history_all(start, stop):
+			yield self.get_changeset(rev)
+
 	def get_changeset(self, rev):
 		#print "get_changeset", rev
 		return GitChangeset(self.git, rev)
@@ -73,7 +79,7 @@ class GitRepository(Repository):
 			kind = Node.FILE
 			if mode2[0] == '1' or mode2[0] == '1':
 				kind = Node.DIRECTORY
-				
+
 			if action == 'A':
 				change = Changeset.ADD
 			elif action == 'M':
@@ -106,8 +112,8 @@ class GitRepository(Repository):
 		return None
 
 	def rev_older_than(self, rev1, rev2):
-		rc = rev1 in self.git.history(rev2, '', 1)
-		#print "rev_older_than", (rev1, rev2, rc)
+		rc = self.git.rev_is_anchestor(rev1,rev2)
+		#rc = rev1 in self.git.history(rev2, '', skip=1)
 		return rc
 
 	def sync(self):
@@ -121,7 +127,7 @@ class GitNode(Node):
 		self.sha = rev
 		self.perm = None
 		self.data_len = None
-		
+
 		kind = Node.DIRECTORY
 		p = path.strip('/')
 		if p != "":
@@ -145,7 +151,7 @@ class GitNode(Node):
 				kind = Node.FILE
 			else:
 				self.log.debug("kind is "+k)
-			
+
 		Node.__init__(self, path, rev, kind)
 
 		self.created_path = path
@@ -155,7 +161,7 @@ class GitNode(Node):
 		#print "get_content ", self.path, self.sha
 		if self.isfile:
 			return self.git.get_file(self.sha)
-			
+
 		return None
 
 	def get_properties(self):
@@ -168,12 +174,12 @@ class GitNode(Node):
 			return
 		if not self.isdir:
 			return
-		
+
 		p = self.path.strip('/')
 		if p != '': p = p + '/'
 		for e in self.git.tree_ls(self.rev, p):
 			yield GitNode(self.git, e[3], self.rev, e)
-	
+
 	def get_content_type(self):
 		if self.isdir:
 			return None
@@ -187,8 +193,9 @@ class GitNode(Node):
 		return None
 
 	def get_history(self, limit=None):
+		#print "get_history", limit, self.path
 		p = self.path.strip('/')
-		for rev in self.git.history(self.rev, p):
+		for rev in self.git.history(self.rev, p, limit):
 			yield (self.path, rev, Changeset.EDIT)
 
 	def get_last_modified(self):
@@ -197,12 +204,15 @@ class GitNode(Node):
 class GitChangeset(Changeset):
 	def __init__(self, git, sha):
 		self.git = git
-		(msg,props) = git.read_commit(sha)
+		try:
+			(msg,props) = git.read_commit(sha)
+		except PyGIT.GitErrorSha:
+			raise NoSuchChangeset(sha)
 		self.props = props
 
 		committer = props['committer'][0]
 		(user,time,tz) = committer.rsplit(None, 2)
-		
+
 		Changeset.__init__(self, sha, msg, user, float(time))
 
 	def get_properties(self):
@@ -222,7 +232,7 @@ class GitChangeset(Changeset):
 			kind = Node.FILE
 			if mode1[0:1] == '04' or mode2[0:1] == '04':
 				kind = Node.DIRECTORY
-				
+
 			if action == 'A':
 				change = Changeset.ADD
 			elif action == 'M':
