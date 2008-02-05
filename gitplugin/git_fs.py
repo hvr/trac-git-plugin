@@ -16,11 +16,39 @@ from trac.core import *
 from trac.util import TracError, shorten_line, escape
 from trac.versioncontrol import Changeset, Node, Repository, \
                                 IRepositoryConnector, NoSuchChangeset, NoSuchNode
+from trac.wiki import IWikiSyntaxProvider
+from trac.util.html import escape, html
 
 import PyGIT
 
 class GitConnector(Component):
-	implements(IRepositoryConnector)
+	implements(IRepositoryConnector, IWikiSyntaxProvider)
+
+	#######################
+	# IWikiSyntaxProvider
+
+	def get_wiki_syntax(self):
+		yield (r'\b[0-9a-fA-F]{40,40}\b', 
+		       lambda fmt, sha, match:
+			       self._format_sha_link(fmt, 'changeset', sha, sha))
+
+	def get_link_resolvers(self):
+		yield ('sha', self._format_sha_link)
+
+	def _format_sha_link(self, formatter, ns, sha, label, fullmatch=None):
+		try:
+			changeset = self.env.get_repository().get_changeset(sha)
+			return html.a(label, class_="changeset",
+				      title=shorten_line(changeset.message),
+				      href=formatter.href.changeset(sha))
+		except TracError, e:
+			return html.a(label, class_="missing changeset",
+				      href=formatter.href.changeset(sha),
+				      title=unicode(e), rel="nofollow")
+
+
+	#######################
+	# IRepositoryConnector
 
 	def get_supported_types(self):
 		yield ("git", 8)
