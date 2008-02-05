@@ -12,8 +12,10 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-import os, re
+import os, re, sys, time
 #from traceback import print_stack
+
+_profile_git_calls = False
 
 class GitError(Exception):
     pass
@@ -28,7 +30,17 @@ class Storage:
 
     def _git_call_f(self,cmd):
         #print "GIT: "+cmd
+        if _profile_git_calls:
+            t = time.time()
+            pass
+
         (input, output, error) = os.popen3('GIT_DIR="%s" %s' % (self.repo,cmd))
+
+        if _profile_git_calls:
+            t = time.time() - t
+            print >>sys.stderr, "GIT: took %6.2fs for '%s'" % (t, cmd)
+            pass
+
         return output
 
     def _git_call(self,cmd):
