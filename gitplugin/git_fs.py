@@ -14,38 +14,70 @@
 
 from trac.core import *
 from trac.util import TracError, shorten_line, escape
-from trac.versioncontrol import Changeset, Node, Repository, \
-                                IRepositoryConnector, NoSuchChangeset, NoSuchNode
+from trac.util.datefmt import utc
+from trac.versioncontrol.api import \
+    Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
-from trac.util.html import escape, html
+from trac.versioncontrol.web_ui import IPropertyRenderer
+
+from genshi.builder import tag
+
+from datetime import datetime
+import time
+
+import pkg_resources
+pkg_resources.require('Trac>=0.11dev')
+
+from genshi.builder import tag
 
 import PyGIT
 
 class GitConnector(Component):
-	implements(IRepositoryConnector, IWikiSyntaxProvider)
+	implements(IRepositoryConnector, IWikiSyntaxProvider, IPropertyRenderer)
+
+	def _format_sha_link(self, formatter, ns, sha, label, fullmatch=None):
+		try:
+			changeset = self.env.get_repository().get_changeset(sha)
+			return tag.a(label, class_="changeset",
+				     title=shorten_line(changeset.message),
+				     href=formatter.href.changeset(sha))
+		except TracError, e:
+			return tag.a(label, class_="missing changeset",
+				     href=formatter.href.changeset(sha),
+				     title=unicode(e), rel="nofollow")
+
+	#######################
+	# IPropertyRenderer
+
+	# relied upon by GitChangeset
+
+        def match_property(self, name, mode):
+		if (name == 'Parents' and mode == 'revprop'):
+			return 8 # default renderer has priority 1
+		return 0
+
+        def render_property(self, name, mode, context, props):
+		assert name == 'Parents'
+
+		revs = props[name]
+
+		def sha_link(sha):
+			return self._format_sha_link(context, 'sha', sha, sha)
+
+		return tag([tag(sha_link(rev), ', ') for rev in revs[:-1]],
+			   sha_link(revs[-1]))
+
 
 	#######################
 	# IWikiSyntaxProvider
 
 	def get_wiki_syntax(self):
-		yield (r'\b[0-9a-fA-F]{40,40}\b', 
+		yield (r'\b[0-9a-fA-F]{40,40}\b',
 		       lambda fmt, sha, match:
 			       self._format_sha_link(fmt, 'changeset', sha, sha))
 
 	def get_link_resolvers(self):
 		yield ('sha', self._format_sha_link)
-
-	def _format_sha_link(self, formatter, ns, sha, label, fullmatch=None):
-		try:
-			changeset = self.env.get_repository().get_changeset(sha)
-			return html.a(label, class_="changeset",
-				      title=shorten_line(changeset.message),
-				      href=formatter.href.changeset(sha))
-		except TracError, e:
-			return html.a(label, class_="missing changeset",
-				      href=formatter.href.changeset(sha),
-				      title=unicode(e), rel="nofollow")
-
 
 	#######################
 	# IRepositoryConnector
@@ -62,6 +94,9 @@ class GitRepository(Repository):
 		self.gitrepo = path
 		self.git = PyGIT.Storage(path)
 		Repository.__init__(self, "git:"+path, None, log)
+
+	def close(self):
+		self.git = None
 
 	def get_youngest_rev(self):
 		return self.git.head()
@@ -89,10 +124,14 @@ class GitRepository(Repository):
 
 	def get_changesets(self, start, stop):
 		#print "get_changesets", start, stop
-		for rev in self.git.history_all(start, stop):
+		def to_unix(dt):
+			return time.mktime(dt.timetuple()) + dt.microsecond/1e6
+
+		for rev in self.git.history_all(to_unix(start), to_unix(stop)):
 			yield self.get_changeset(rev)
 
 	def get_changeset(self, rev):
+		"""GitChangeset factory method"""
 		#print "get_changeset", rev
 		return GitChangeset(self.git, rev)
 
@@ -233,7 +272,7 @@ class GitChangeset(Changeset):
 	def __init__(self, git, sha):
 		self.git = git
 		try:
-			(msg,props) = git.read_commit(sha)
+			(msg, props) = git.read_commit(sha)
 		except PyGIT.GitErrorSha:
 			raise NoSuchChangeset(sha)
 		self.props = props
@@ -241,15 +280,22 @@ class GitChangeset(Changeset):
 		committer = props['committer'][0]
 		(user,time,tz) = committer.rsplit(None, 2)
 
-		Changeset.__init__(self, sha, msg, user, float(time))
+		time = datetime.fromtimestamp(float(time), utc)
+		Changeset.__init__(self, sha, msg, user, time)
 
 	def get_properties(self):
-		for k in self.props:
-			v = self.props[k]
-			if k in ['committer', 'author']:
-				yield("git-"+k, ", ".join(v), False, 'author')
-			if k in ['parent']:
-				yield("git-"+k, ", ".join(("[%s]" % c) for c in v), True, 'changeset')
+		properties = {}
+		if 'parent' in self.props:
+			properties['Parents'] = self.props['parent']
+		if 'committer' in self.props:
+			properties['git-committer'] = "\n".join(self.props['committer'])
+		if 'author' in self.props:
+			git_author = "\n".join(self.props['author'])
+			if not (properties.has_key('git-committer') and
+				properties['git-committer'] == git_author):
+				properties['git-author'] = git_author
+
+		return properties
 
 	def get_changes(self):
 		#print "GitChangeset.get_changes"
