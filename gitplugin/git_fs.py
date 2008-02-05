@@ -125,11 +125,20 @@ class GitNode(Node):
 		kind = Node.DIRECTORY
 		p = path.strip('/')
 		if p != "":
-			if tree_ls_info:
-				(self.perm,k,self.sha,fn)=tree_ls_info
-			else:
-				[(self.perm,k,self.sha,fn)]=git.tree_ls(rev, p)
+                        if tree_ls_info == None or tree_ls_info == "":
+				tree_ls_info = git.tree_ls(rev, p)
+                                if tree_ls_info != []:
+                                        [tree_ls_info] = tree_ls_info
+                                else:
+                                        tree_ls_info = None
+
+			if tree_ls_info != None:
+				(self.perm,k,self.sha,fn) = tree_ls_info
+                        else:
+                                k = 'blob'
+
 			rev=self.git.last_change(rev, p)
+
 			if k=='tree':
 				pass
 			elif k=='blob':
