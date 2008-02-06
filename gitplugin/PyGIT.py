@@ -233,14 +233,20 @@ class Storage:
         return self._git_call("git-rev-parse --short '%s'" % rev).strip()
 
     def get_branches(self):
-        "returns list of branches, with active (i.e. HEAD) one being the first item"
+        "returns list of branches, with active (= HEAD) one being the first item"
         result=[]
-        for e in self._git_call_f("git-branch").readlines():
-            bname=e[1:].strip()
+        for e in self._git_call_f("git-branch -v --no-abbrev").readlines():
+            (bname,bsha)=e[1:].strip().split()[:2]
             if e[0]=='*':
-                result.insert(0,bname)
+                result.insert(0,(bname,bsha))
             else:
-                result.append(bname)
+                result.append((bname,bsha))
+        return result
+
+    def get_tags(self):
+        result=[]
+        for e in self._git_call_f("git-tag -l").readlines():
+            result.append(e.strip())
         return result
 
     def tree_ls(self,sha,path=""):
@@ -356,9 +362,9 @@ class Storage:
             yield (mode1,mode2,obj1,obj2,action,path)
 
 if __name__ == '__main__':
-    import sys
+    import sys, logging
 
-    g = Storage(sys.argv[1])
+    g = Storage(sys.argv[1], logging)
 
     print "[%s]" % g.head()
     print g.tree_ls(g.head())

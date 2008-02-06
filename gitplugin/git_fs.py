@@ -151,6 +151,12 @@ class GitRepository(Repository):
 		#print "get_node", path, rev
 		return GitNode(self.git, path, rev)
 
+	def get_quickjump_entries(self, rev):
+		for bname,bsha in self.git.get_branches():
+			yield 'branches', bname, '/', bsha
+		for t in self.git.get_tags():
+			yield 'tags', t, '/', t
+
 	def get_changesets(self, start, stop):
 		#print "get_changesets", start, stop
 		def to_unix(dt):
