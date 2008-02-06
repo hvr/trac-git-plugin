@@ -104,9 +104,13 @@ class Storage:
         if self._commit_db is None:
             self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
             new_db = {}
+            new_tags = set([])
             parent = None
             youngest = None
             ord_rev = 0
+            for revs in self._git_call_f("git-rev-parse --tags").readlines():
+                new_tags.add(revs.strip())
+
             for revs in self._git_call_f("git-rev-list --parents --all").readlines():
                 revs = revs.strip().split()
 
@@ -135,7 +139,7 @@ class Storage:
                     else:
                         new_db[parent] = (set([rev]), set(), 0) # dummy ordinal_id
 
-            self._commit_db = new_db, parent
+            self._commit_db = new_db, parent, new_tags
             self.last_youngest_rev = youngest
             self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
 
@@ -220,13 +224,25 @@ class Storage:
         "verify/lookup given revision object and return a sha id or None if lookup failed"
 
         db = self.get_commits()
+        tag_db = self._commit_db[2]
+
         if db.has_key(rev):
             return rev
 
         rc=self._git_call("git-rev-parse --verify '%s'" % rev).strip()
         if len(rc)==0:
             return None
-        return rc
+
+        if db.has_key(rc):
+            return rc
+        elif rc in tag_db:
+            sha=self._git_call("git-cat-file tag '%s'" % rc).split(None, 2)[:2]
+            if sha[0] != 'object':
+                self.logger.debug("unexpected result from 'git-cat-file tag %s'" % rc)
+                return None
+            return sha[1]
+
+        return None
 
     def shortrev(self,rev):
         "try to shorten sha id"
@@ -255,6 +271,9 @@ class Storage:
         return [e[:-1].split(None, 3) for e in self._git_call_f("git-ls-tree %s '%s'" % (sha,path)).readlines()]
 
     def read_commit(self, sha):
+        if not sha:
+            raise GitErrorSha
+
         db = self.get_commits()
         if sha not in db:
             self.logger.info("read_commit failed for '%s'" % sha)
