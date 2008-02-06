@@ -18,7 +18,9 @@ from trac.util.datefmt import utc
 from trac.versioncontrol.api import \
     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
+from trac.versioncontrol.cache import CachedRepository
 from trac.versioncontrol.web_ui import IPropertyRenderer
+from trac.config import _TRUE_VALUES as TRUE
 
 from genshi.builder import tag
 
@@ -28,12 +30,13 @@ import time
 import pkg_resources
 pkg_resources.require('Trac>=0.11dev')
 
-from genshi.builder import tag
-
 import PyGIT
 
 class GitConnector(Component):
 	implements(IRepositoryConnector, IWikiSyntaxProvider, IPropertyRenderer)
+
+	def __init__(self):
+		self._version = None
 
 	def _format_sha_link(self, formatter, ns, sha, label, fullmatch=None):
 		try:
@@ -52,12 +55,12 @@ class GitConnector(Component):
 	# relied upon by GitChangeset
 
         def match_property(self, name, mode):
-		if (name == 'Parents' and mode == 'revprop'):
+		if (name in ('Parents','Children') and mode == 'revprop'):
 			return 8 # default renderer has priority 1
 		return 0
 
         def render_property(self, name, mode, context, props):
-		assert name == 'Parents'
+		assert name in ('Parents','Children')
 
 		revs = props[name]
 
@@ -86,20 +89,49 @@ class GitConnector(Component):
 		yield ("git", 8)
 
 	def get_repository(self, type, dir, authname):
+		"""GitRepository factory method"""
+		if not self._version:
+			self._version = PyGIT.git_version()
+			self.env.systeminfo.append(('GIT', self._version))
+
 		options = dict(self.config.options(type))
-		return GitRepository(dir, self.log, options)
+
+		repos = GitRepository(dir, self.log, options)
+
+		cached_repository = 'cached_repository' in options and options['cached_repository'] in TRUE
+
+		if cached_repository:
+			repos = CachedRepository(self.env.get_db_cnx(), repos, None, self.log)
+			self.log.info("enabled CachedRepository for '%s'" % dir)
+		else:
+			self.log.info("disabled CachedRepository for '%s'" % dir)
+
+		return repos
 
 class GitRepository(Repository):
 	def __init__(self, path, log, options):
+		self.logger = log
 		self.gitrepo = path
-		self.git = PyGIT.Storage(path)
+
+		persistent_cache = 'persistent_cache' in options and options['persistent_cache'] in TRUE
+
+		self.git = PyGIT.StorageFactory(path, log, not persistent_cache).getInstance()
 		Repository.__init__(self, "git:"+path, None, log)
 
 	def close(self):
 		self.git = None
 
+	def clear(self, youngest_rev=None):
+ 	        self.youngest = None
+		if youngest_rev is not None:
+			self.youngest = self.normalize_rev(youngest_rev)
+		self.oldest = None
+
 	def get_youngest_rev(self):
-		return self.git.head()
+		return self.git.youngest_rev()
+
+	def get_oldest_rev(self):
+		return self.git.oldest_rev()
 
 	def normalize_path(self, path):
 		return path and path.strip('/') or ''
@@ -115,9 +147,6 @@ class GitRepository(Repository):
 	def short_rev(self, rev):
 		return self.git.shortrev(self.normalize_rev(rev))
 
-	def get_oldest_rev(self):
-		return ""
-
 	def get_node(self, path, rev=None):
 		#print "get_node", path, rev
 		return GitNode(self.git, path, rev)
@@ -127,12 +156,11 @@ class GitRepository(Repository):
 		def to_unix(dt):
 			return time.mktime(dt.timetuple()) + dt.microsecond/1e6
 
-		for rev in self.git.history_all(to_unix(start), to_unix(stop)):
+		for rev in self.git.history_timerange(to_unix(start), to_unix(stop)):
 			yield self.get_changeset(rev)
 
 	def get_changeset(self, rev):
 		"""GitChangeset factory method"""
-		#print "get_changeset", rev
 		return GitChangeset(self.git, rev)
 
 	def get_changes(self, old_path, old_rev, new_path, new_rev):
@@ -141,20 +169,14 @@ class GitRepository(Repository):
 		#print "get_changes", (old_path, old_rev, new_path, new_rev)
 
 		for chg in self.git.diff_tree(old_rev, new_rev, self.normalize_path(new_path)):
-			#print chg
 			(mode1,mode2,obj1,obj2,action,path) = chg
-			kind = Node.FILE
+
 			if mode2[0] == '1' or mode2[0] == '1':
 				kind = Node.DIRECTORY
-
-			if action == 'A':
-				change = Changeset.ADD
-			elif action == 'M':
-				change = Changeset.EDIT
-			elif action == 'D':
-				change = Changeset.DELETE
 			else:
-				raise "OhOh"
+				kind = Node.FILE
+
+			change = GitChangeset.action_map[action]
 
 			old_node = None
 			new_node = None
@@ -167,26 +189,26 @@ class GitRepository(Repository):
 			yield (old_node, new_node, kind, change)
 
 	def next_rev(self, rev, path=''):
-		#print "next_rev"
-		for c in self.git.children(rev):
-			return c
-		return None
+		return self.git.hist_next_revision(rev)
 
 	def previous_rev(self, rev):
-		#print "previous_rev"
-		for p in self.git.parents(rev):
-			return p
-		return None
+		return self.git.hist_prev_revision(rev)
 
 	def rev_older_than(self, rev1, rev2):
-		rc = self.git.rev_is_anchestor(rev1,rev2)
-		#rc = rev1 in self.git.history(rev2, '', skip=1)
+		rc = self.git.rev_is_anchestor_of(rev1, rev2)
 		return rc
 
-	def sync(self):
-		#print "GitRepository.sync"
-		pass
+	def sync(self, rev_callback=None):
+		if rev_callback:
+			revs = set(self.git.all_revs())
 
+		if not self.git.sync():
+			return None # nothing expected to change
+
+		if rev_callback:
+			revs = set(self.git.all_revs()) - revs
+			for r in revs:
+				rev_callback(r)
 
 class GitNode(Node):
 	def __init__(self, git, path, rev, tree_ls_info=None):
@@ -269,6 +291,13 @@ class GitNode(Node):
 		return None
 
 class GitChangeset(Changeset):
+
+	action_map = {
+		'A': Changeset.ADD,
+		'M': Changeset.EDIT,
+		'D': Changeset.DELETE 
+		}
+
 	def __init__(self, git, sha):
 		self.git = git
 		try:
@@ -278,6 +307,12 @@ class GitChangeset(Changeset):
 		self.props = props
 
 		committer = props['committer'][0]
+
+		assert 'children' not in props
+		_children = list(git.children(sha))
+		if _children:
+			props['children'] = _children
+
 		(user,time,tz) = committer.rsplit(None, 2)
 
 		time = datetime.fromtimestamp(float(time), utc)
@@ -287,6 +322,8 @@ class GitChangeset(Changeset):
 		properties = {}
 		if 'parent' in self.props:
 			properties['Parents'] = self.props['parent']
+		if 'children' in self.props:
+			properties['Children'] = self.props['children']
 		if 'committer' in self.props:
 			properties['git-committer'] = "\n".join(self.props['committer'])
 		if 'author' in self.props:
@@ -301,19 +338,11 @@ class GitChangeset(Changeset):
 		#print "GitChangeset.get_changes"
 		prev = self.props.has_key('parent') and self.props['parent'][0] or None
 		for chg in self.git.diff_tree(prev, self.rev):
-			#print chg
 			(mode1,mode2,obj1,obj2,action,path) = chg
 			kind = Node.FILE
 			if mode1[0:1] == '04' or mode2[0:1] == '04':
 				kind = Node.DIRECTORY
 
-			if action == 'A':
-				change = Changeset.ADD
-			elif action == 'M':
-				change = Changeset.EDIT
-			elif action == 'D':
-				change = Changeset.DELETE
-			else:
-				raise "OhOh"
+			change = GitChangeset.action_map[action]
 
 			yield (path, kind, change, path, prev)
