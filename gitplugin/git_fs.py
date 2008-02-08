@@ -148,7 +148,6 @@ class GitRepository(Repository):
 		return self.git.shortrev(self.normalize_rev(rev))
 
 	def get_node(self, path, rev=None):
-		#print "get_node", path, rev
 		return GitNode(self.git, path, rev)
 
 	def get_quickjump_entries(self, rev):
@@ -219,7 +218,7 @@ class GitRepository(Repository):
 class GitNode(Node):
 	def __init__(self, git, path, rev, tree_ls_info=None):
 		self.git = git
-		self.sha = rev
+		self.sha = None
 		self.perm = None
 		self.data_len = None
 
@@ -234,11 +233,11 @@ class GitNode(Node):
                                         tree_ls_info = None
 
 			if tree_ls_info != None:
-				(self.perm,k,self.sha,fn) = tree_ls_info
+				(self.perm, k, self.sha, fn) = tree_ls_info
                         else:
                                 k = 'blob'
 
-			rev=self.git.last_change(rev, p)
+			rev = self.git.last_change(rev, p) # FIXME
 
 			if k=='tree':
 				pass
@@ -264,9 +263,18 @@ class GitNode(Node):
 			return {'mode': self.perm }
 		return {}
 
-	def get_entries(self):
-		if self.isfile:
+	def get_annotations(self):
+		p = self.path.strip('/')
+		if not self.isfile:
 			return
+
+		result = []
+		for brev,blineno in self.git.blame(self.rev, p):
+			result.append(brev)
+
+		return result
+
+	def get_entries(self):
 		if not self.isdir:
 			return
 

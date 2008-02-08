@@ -364,6 +364,26 @@ class Storage:
         rev2 = rev2.strip()
         return rev2 in self.children_recursive(rev1)
 
+    def blame(self, commit_sha, path):
+        in_metadata = False
+        for line in self._git_call_f("git-blame -p -- '%s' %s" \
+                                         % (path, commit_sha)).readlines():
+            assert line
+            if in_metadata:
+                in_metadata = line[0] != '\t'
+            else:
+                split_line = line.split()
+                if len(split_line) == 4:
+                    (sha, orig_lineno, lineno, group_size) = split_line
+                else:
+                    (sha, orig_lineno, lineno) = split_line
+
+                assert len(sha) == 40
+                yield (sha, lineno)
+                in_metadata = True
+
+        assert not in_metadata
+
     def last_change(self, sha, path):
         for rev in self._git_call_f("git-rev-list --max-count=1 %s -- '%s'" % (sha,path)).readlines():
             return rev.strip()
