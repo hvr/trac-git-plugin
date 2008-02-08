@@ -350,8 +350,8 @@ class Storage:
     def history(self, sha, path, limit=None, skip=0):
         if limit is None:
             limit = -1
-        for rev in self._git_call_f("rev-list", 
-                                    ["--max-count=%d" % limit, 
+        for rev in self._git_call_f("rev-list",
+                                    ["--max-count=%d" % limit,
                                      str(sha), "--", path]).readlines():
             if(skip > 0):
                 skip = skip - 1
@@ -402,15 +402,30 @@ class Storage:
     def diff_tree(self, tree1, tree2, path=""):
         if tree1 is None:
             tree1 = "--root"
-        for chg in self._git_call_f("diff-tree", ["-r",
-                                                  str(tree1),
-                                                  str(tree2),
-                                                  "--", path]).readlines():
-            if chg.startswith(tree2):
+
+        next_is_path = False
+        for chg in self._git_call("diff-tree", ["-z", "-r",
+                                                str(tree1),
+                                                str(tree2),
+                                                "--", path]).split('\0'):
+            if not chg:
+                assert not next_is_path
                 continue
-            (mode1,mode2,obj1,obj2,action,path) = chg[:-1].split(None, 5)
+
+            if next_is_path:
+                next_is_path = False
+                path = chg
+                yield (mode1,mode2,obj1,obj2,action,path)
+                continue
+
+            if not chg.startswith(':'):
+                continue
+
+            (mode1,mode2,obj1,obj2,action) = chg.split(None)
             mode1 = mode1[1:]
-            yield (mode1,mode2,obj1,obj2,action,path)
+            next_is_path = True
+
+        assert not next_is_path
 
 if __name__ == '__main__':
     import sys, logging
