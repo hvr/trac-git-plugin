@@ -108,10 +108,10 @@ class Storage:
             parent = None
             youngest = None
             ord_rev = 0
-            for revs in self._git_call_f("git-rev-parse --tags").readlines():
+            for revs in self._git_call_f("rev-parse", ["--tags"]).readlines():
                 new_tags.add(revs.strip())
 
-            for revs in self._git_call_f("git-rev-list --parents --all").readlines():
+            for revs in self._git_call_f("rev-list", ["--parents", "--all"]).readlines():
                 revs = revs.strip().split()
 
                 rev = revs[0]
@@ -151,13 +151,12 @@ class Storage:
         return self._commit_db[0]
 
     def sync(self):
-        rev = self._git_call("git-rev-list -n1 --all").strip()
+        rev = self._git_call("rev-list", ["--max-count=1", "--all"]).strip()
         return self._invalidate_caches(rev)
 
     def oldest_rev(self):
         self.get_commits() # trigger commit tree db build
         return self._commit_db[1]
-        #return self._git_call("git-rev-list --reverse --all | head -1").strip()
 
     def youngest_rev(self):
         self.get_commits() # trigger commit tree db build
@@ -190,13 +189,16 @@ class Storage:
     def hist_prev_revision(self, sha):
         return self.history_relative_rev(sha, +1)
 
-    def _git_call_f(self,cmd):
+    def _git_call_f(self, gitcmd, args=[]):
         #print "GIT: "+cmd
         if _profile_git_calls:
             t = time.time()
             pass
 
-        (input, output, error) = os.popen3('GIT_DIR="%s" %s' % (self.repo,cmd))
+        cmd = ["git", '--git-dir=%s' % self.repo, gitcmd]
+        cmd.extend(args)
+
+        (input, output, error) = os.popen3(cmd)
 
         if _profile_git_calls:
             t = time.time() - t # doesn't work actually, as popen3 runs async
@@ -205,12 +207,13 @@ class Storage:
 
         return output
 
-    def _git_call(self,cmd):
-        return self._git_call_f(cmd).read()
+    def _git_call(self, cmd, args=[]):
+        return self._git_call_f(cmd, args).read()
 
     def get_commit_encoding(self):
         if self.commit_encoding is None:
-            self.commit_encoding = self._git_call("git-repo-config --get i18n.commitEncoding").strip()
+            self.commit_encoding = self._git_call("repo-config",
+                                                  ["--get", "i18n.commitEncoding"]).strip()
             if ''==self.commit_encoding:
                 self.commit_encoding = 'utf-8'
         return self.commit_encoding
@@ -220,23 +223,24 @@ class Storage:
         "get current HEAD commit id"
         return self.verifyrev("HEAD")
 
-    def verifyrev(self,rev):
+    def verifyrev(self, rev):
         "verify/lookup given revision object and return a sha id or None if lookup failed"
-
         db = self.get_commits()
         tag_db = self._commit_db[2]
+
+        rev = str(rev)
 
         if db.has_key(rev):
             return rev
 
-        rc=self._git_call("git-rev-parse --verify '%s'" % rev).strip()
+        rc = self._git_call("rev-parse", ["--verify", rev]).strip()
         if len(rc)==0:
             return None
 
         if db.has_key(rc):
             return rc
         elif rc in tag_db:
-            sha=self._git_call("git-cat-file tag '%s'" % rc).split(None, 2)[:2]
+            sha=self._git_call("cat-file", ["tag", rc]).split(None, 2)[:2]
             if sha[0] != 'object':
                 self.logger.debug("unexpected result from 'git-cat-file tag %s'" % rc)
                 return None
@@ -244,14 +248,14 @@ class Storage:
 
         return None
 
-    def shortrev(self,rev):
+    def shortrev(self, rev):
         "try to shorten sha id"
-        return self._git_call("git-rev-parse --short '%s'" % rev).strip()
+        return self._git_call("rev-parse", ["--short", str(rev)]).strip()
 
     def get_branches(self):
         "returns list of branches, with active (= HEAD) one being the first item"
         result=[]
-        for e in self._git_call_f("git-branch -v --no-abbrev").readlines():
+        for e in self._git_call_f("branch", ["-v", "--no-abbrev"]).readlines():
             (bname,bsha)=e[1:].strip().split()[:2]
             if e[0]=='*':
                 result.insert(0,(bname,bsha))
@@ -261,14 +265,17 @@ class Storage:
 
     def get_tags(self):
         result=[]
-        for e in self._git_call_f("git-tag -l").readlines():
+        for e in self._git_call_f("tag", ["-l"]).readlines():
             result.append(e.strip())
         return result
 
-    def tree_ls(self,sha,path=""):
-        if len(path)>0 and path[0]=='/':
-            path=path[1:]
-        return [e[:-1].split(None, 3) for e in self._git_call_f("git-ls-tree %s '%s'" % (sha,path)).readlines()]
+    def tree_ls(self, rev, path=""):
+        rev = str(rev) # paranoia
+        if path.startswith('/'):
+            path = path[1:]
+        return [e.split(None, 3) for e in self._git_call("ls-tree",
+                                                         ["-z", rev, "--",
+                                                          path]).split('\0') if e]
 
     def read_commit(self, sha):
         if not sha:
@@ -279,7 +286,7 @@ class Storage:
             self.logger.info("read_commit failed for '%s'" % sha)
             raise GitErrorSha
 
-        raw = self._git_call("git-cat-file commit "+sha)
+        raw = self._git_call("cat-file", ["commit", str(sha)])
         raw = unicode(raw, self.get_commit_encoding(), 'replace')
         lines = raw.splitlines()
 
@@ -298,10 +305,10 @@ class Storage:
         return ("\n".join(lines),d)
 
     def get_file(self, sha):
-        return self._git_call_f("git-cat-file blob "+sha)
+        return self._git_call_f("cat-file", ["blob", str(sha)])
 
     def get_obj_size(self, sha):
-        return int(self._git_call("git-cat-file -s "+sha).strip())
+        return int(self._git_call("cat-file", ["-s", str(sha)]).strip())
 
     def children(self, sha):
         db = self.get_commits()
@@ -341,10 +348,11 @@ class Storage:
             return []
 
     def history(self, sha, path, limit=None, skip=0):
-        #print "history", sha, path, limit, skip
         if limit is None:
             limit = -1
-        for rev in self._git_call_f("git-rev-list -n%d %s -- '%s'" % (limit,sha,path)).readlines():
+        for rev in self._git_call_f("rev-list", 
+                                    ["--max-count=%d" % limit, 
+                                     str(sha), "--", path]).readlines():
             if(skip > 0):
                 skip = skip - 1
                 continue
@@ -354,8 +362,10 @@ class Storage:
         return self.get_commits().iterkeys()
 
     def history_timerange(self, start, stop):
-        for rev in self._git_call_f("git-rev-list --reverse --max-age=%d --min-age=%d --all" \
-                                        % (start,stop)).readlines():
+        for rev in self._git_call_f("rev-list", ["--reverse",
+                                                 "--max-age=%d" % start,
+                                                 "--min-age=%d" % stop,
+                                                 "--all"]).readlines():
             yield rev.strip()
 
     def rev_is_anchestor_of(self, rev1, rev2):
@@ -366,8 +376,8 @@ class Storage:
 
     def blame(self, commit_sha, path):
         in_metadata = False
-        for line in self._git_call_f("git-blame -p -- '%s' %s" \
-                                         % (path, commit_sha)).readlines():
+        args = ["-p", "--", path, str(commit_sha)]
+        for line in self._git_call_f("blame", args).readlines():
             assert line
             if in_metadata:
                 in_metadata = line[0] != '\t'
@@ -385,15 +395,17 @@ class Storage:
         assert not in_metadata
 
     def last_change(self, sha, path):
-        for rev in self._git_call_f("git-rev-list --max-count=1 %s -- '%s'" % (sha,path)).readlines():
-            return rev.strip()
-        return None
+        last_rev = self._git_call("rev-list",
+                                  ["--max-count=1", sha, "--", path])
+        return last_rev.strip()
 
     def diff_tree(self, tree1, tree2, path=""):
         if tree1 is None:
             tree1 = "--root"
-        cmd = "git-diff-tree -r %s %s -- '%s'" % (tree1, tree2, path)
-        for chg in self._git_call_f(cmd).readlines():
+        for chg in self._git_call_f("diff-tree", ["-r",
+                                                  str(tree1),
+                                                  str(tree2),
+                                                  "--", path]).readlines():
             if chg.startswith(tree2):
                 continue
             (mode1,mode2,obj1,obj2,action,path) = chg[:-1].split(None, 5)
