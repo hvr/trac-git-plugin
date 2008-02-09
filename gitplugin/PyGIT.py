@@ -219,7 +219,7 @@ class Storage:
                 return k
 
         # should never be reached if db is consistent
-        raise GitError
+        raise GitError("internal inconsistency detected")
 
     def hist_next_revision(self, sha):
         return self.history_relative_rev(sha, -1)
@@ -286,7 +286,7 @@ class Storage:
             result.append(e.strip())
         return result
 
-    def tree_ls(self, rev, path=""):
+    def ls_tree(self, rev, path=""):
         rev = str(rev) # paranoia
         if path.startswith('/'):
             path = path[1:]
@@ -325,7 +325,11 @@ class Storage:
         return self._git_call_f("cat-file", ["blob", str(sha)])
 
     def get_obj_size(self, sha):
-        return int(self._git_call("cat-file", ["-s", str(sha)]).strip())
+        sha = str(sha)
+        try:
+            return int(self._git_call("cat-file", ["-s", sha]).strip())
+        except ValueError:
+            raise GitErrorSha("object '%s' not found" % sha)
 
     def children(self, sha):
         db = self.get_commits()
@@ -364,15 +368,12 @@ class Storage:
         except KeyError:
             return []
 
-    def history(self, sha, path, limit=None, skip=0):
+    def history(self, sha, path, limit=None):
         if limit is None:
             limit = -1
         for rev in self._git_call_f("rev-list",
                                     ["--max-count=%d" % limit,
                                      str(sha), "--", path]).readlines():
-            if(skip > 0):
-                skip = skip - 1
-                continue
             yield rev.strip()
 
     def all_revs(self):
@@ -452,7 +453,7 @@ if __name__ == '__main__':
     g = Storage(sys.argv[1], logging)
 
     print "[%s]" % g.head()
-    print g.tree_ls(g.head())
+    print g.ls_tree(g.head())
     print "--------------"
     print g.read_commit(g.head())
     print "--------------"

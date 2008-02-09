@@ -217,6 +217,9 @@ class GitRepository(Repository):
 		rc = self.git.rev_is_anchestor_of(rev1, rev2)
 		return rc
 
+	def clear(self, youngest_rev=None):
+		self.sync()
+
 	def sync(self, rev_callback=None):
 		if rev_callback:
 			revs = set(self.git.all_revs())
@@ -230,7 +233,7 @@ class GitRepository(Repository):
 				rev_callback(r)
 
 class GitNode(Node):
-	def __init__(self, git, path, rev, tree_ls_info=None):
+	def __init__(self, git, path, rev, ls_tree_info=None):
 		self.git = git
 		self.sha = None
 		self.perm = None
@@ -239,15 +242,15 @@ class GitNode(Node):
 		kind = Node.DIRECTORY
 		p = path.strip('/')
 		if p != "":
-                        if tree_ls_info == None or tree_ls_info == "":
-				tree_ls_info = git.tree_ls(rev, p)
-                                if tree_ls_info != []:
-                                        [tree_ls_info] = tree_ls_info
+                        if ls_tree_info == None or ls_tree_info == "":
+				ls_tree_info = git.ls_tree(rev, p)
+                                if ls_tree_info != []:
+                                        [ls_tree_info] = ls_tree_info
                                 else:
-                                        tree_ls_info = None
+                                        ls_tree_info = None
 
-			if tree_ls_info != None:
-				(self.perm, k, self.sha, fn) = tree_ls_info
+			if ls_tree_info != None:
+				(self.perm, k, self.sha, fn) = ls_tree_info
                         else:
                                 k = 'blob'
 
@@ -294,7 +297,7 @@ class GitNode(Node):
 
 		p = self.path.strip('/')
 		if p != '': p = p + '/'
-		for e in self.git.tree_ls(self.rev, p):
+		for e in self.git.ls_tree(self.rev, p):
 			yield GitNode(self.git, e[3], self.rev, e)
 
 	def get_content_type(self):
