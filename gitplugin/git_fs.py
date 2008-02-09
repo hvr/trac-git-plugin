@@ -38,6 +38,18 @@ class GitConnector(Component):
 	def __init__(self):
 		self._version = None
 
+		try:
+			self._version = PyGIT.git_version()
+		except PyGIT.GitError, e:
+			self.log.error("GitError: "+e.message)
+
+		if self._version:
+			self.log.info("detected GIT version %s" % self._version['v_str'])
+			self.env.systeminfo.append(('GIT', self._version['v_str']))
+			if self._version['v_compatible']:
+				self.log.error("GIT version %s installed not compatible (need >= %s)" %
+					       (self._version['v_str'], self._version['v_min_str']))
+
 	def _format_sha_link(self, formatter, ns, sha, label, fullmatch=None):
 		try:
 			changeset = self.env.get_repository().get_changeset(sha)
@@ -91,8 +103,10 @@ class GitConnector(Component):
 	def get_repository(self, type, dir, authname):
 		"""GitRepository factory method"""
 		if not self._version:
-			self._version = PyGIT.git_version()
-			self.env.systeminfo.append(('GIT', self._version))
+			raise TracError("GIT backend not available")
+		elif not self._version['v_compatible']:
+			raise TracError("GIT version %s installed not compatible (need >= %s)" %
+					(self._version['v_str'], self._version['v_min_str']))
 
 		options = dict(self.config.options(type))
 

@@ -16,22 +16,53 @@ import os, re, sys, time, weakref, threading
 from collections import deque
 #from traceback import print_stack
 
-_profile_git_calls = False
-
 class GitError(Exception):
     pass
 
 class GitErrorSha(GitError):
     pass
 
+GIT_CMD = "git"
+GIT_VERSION_MIN_REQUIRED = (1,5,2)
+GIT_PROFILE = False
+
+def _git_execute(gitcmd, git_dir=None, *args):
+    if GIT_PROFILE:
+        t = time.time()
+
+    # construct command tuple
+    cmd = [GIT_CMD]
+    if git_dir:
+        cmd.append('--git-dir=%s' % git_dir)
+    cmd.append(gitcmd)
+    cmd.extend(args)
+
+    # fds = (input, output, error)
+    fds = os.popen3(cmd)
+
+    if GIT_PROFILE:
+        t = time.time() - t # doesn't work actually, as popen3 runs async
+        print >>sys.stderr, "GIT: took %6.2fs for '%s'" % (t, cmd)
+        pass
+
+    return fds
+
 def git_version():
     try:
-        (input, output, error) = os.popen3('git --version')
+        output = _git_execute("version")[1]
         [v] = output.readlines()
-        [a,b,c] = v.strip().split()
-        return c
+        [a,b,version] = v.strip().split()
+        split_version = tuple(map(int, version.split('.')))
+
+        result = {}
+        result['v_str'] = version
+        result['v_tuple'] = split_version
+        result['v_min_tuple'] = GIT_VERSION_MIN_REQUIRED
+        result['v_min_str'] = ".".join(map(str, GIT_VERSION_MIN_REQUIRED))
+        result['v_compatible'] = split_version >= GIT_VERSION_MIN_REQUIRED
+        return result
     except:
-        raise GitError
+        raise GitError("Could not retrieve GIT version")
 
 class StorageFactory:
     __dict = weakref.WeakValueDictionary()
@@ -83,6 +114,13 @@ class Storage:
 
     def __del__(self):
         self.logger.debug("PyGIT.Storage instance %d destructed" % id(self))
+
+    def _git_call_f(self, gitcmd, args=[]):
+        (input, output, error) = _git_execute(gitcmd, self.repo, *args)
+        return output
+
+    def _git_call(self, cmd, args=[]):
+        return self._git_call_f(cmd, args).read()
 
     def _invalidate_caches(self,youngest_rev=None):
         self._lock.acquire()
@@ -189,27 +227,6 @@ class Storage:
     def hist_prev_revision(self, sha):
         return self.history_relative_rev(sha, +1)
 
-    def _git_call_f(self, gitcmd, args=[]):
-        #print "GIT: "+cmd
-        if _profile_git_calls:
-            t = time.time()
-            pass
-
-        cmd = ["git", '--git-dir=%s' % self.repo, gitcmd]
-        cmd.extend(args)
-
-        (input, output, error) = os.popen3(cmd)
-
-        if _profile_git_calls:
-            t = time.time() - t # doesn't work actually, as popen3 runs async
-            print >>sys.stderr, "GIT: took %6.2fs for '%s'" % (t, cmd)
-            pass
-
-        return output
-
-    def _git_call(self, cmd, args=[]):
-        return self._git_call_f(cmd, args).read()
-
     def get_commit_encoding(self):
         if self.commit_encoding is None:
             self.commit_encoding = self._git_call("repo-config",
@@ -257,7 +274,7 @@ class Storage:
         result=[]
         for e in self._git_call_f("branch", ["-v", "--no-abbrev"]).readlines():
             (bname,bsha)=e[1:].strip().split()[:2]
-            if e[0]=='*':
+            if e.startswith('*'):
                 result.insert(0,(bname,bsha))
             else:
                 result.append((bname,bsha))
@@ -380,7 +397,7 @@ class Storage:
         for line in self._git_call_f("blame", args).readlines():
             assert line
             if in_metadata:
-                in_metadata = line[0] != '\t'
+                in_metadata = not line.startswith('\t')
             else:
                 split_line = line.split()
                 if len(split_line) == 4:
@@ -429,6 +446,8 @@ class Storage:
 
 if __name__ == '__main__':
     import sys, logging
+
+    print "git version [%s]" % str(git_version())
 
     g = Storage(sys.argv[1], logging)
 
