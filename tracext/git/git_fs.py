@@ -13,8 +13,8 @@
 # GNU General Public License for more details.
 
 from trac.core import *
-from trac.util import TracError, shorten_line, escape
-from trac.util.datefmt import utc
+from trac.util import TracError, shorten_line
+from trac.util.datefmt import utc, FixedOffset
 from trac.versioncontrol.api import \
     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
@@ -23,6 +23,7 @@ from trac.versioncontrol.web_ui import IPropertyRenderer
 from trac.config import _TRUE_VALUES as TRUE
 
 from genshi.builder import tag
+from genshi.core import Markup, escape
 
 from datetime import datetime
 import time
@@ -66,22 +67,30 @@ class GitConnector(Component):
 
 	# relied upon by GitChangeset
 
+	_rendered_props = ('Parents','Children','git-committer','git-author')
+
         def match_property(self, name, mode):
-		if (name in ('Parents','Children') and mode == 'revprop'):
+		if name in ('Parents','Children','git-committer','git-author') \
+			    and mode == 'revprop':
 			return 8 # default renderer has priority 1
 		return 0
 
         def render_property(self, name, mode, context, props):
-		assert name in ('Parents','Children')
-
-		revs = props[name]
-
 		def sha_link(sha):
 			return self._format_sha_link(context, 'sha', sha, sha)
 
-		return tag([tag(sha_link(rev), ', ') for rev in revs[:-1]],
-			   sha_link(revs[-1]))
+		if name in ('Parents','Children'):
+			revs = props[name]
 
+			return tag([tag(sha_link(rev), ', ') for rev in revs[:-1]],
+				   sha_link(revs[-1]))
+
+		if name in ('git-committer', 'git-author'):
+			user_,time_ = props[name]
+			_str = user_ + " / " + time_.strftime('%Y-%m-%dT%H:%M:%SZ%z')
+			return unicode(_str)
+
+		raise TracError("internal error")
 
 	#######################
 	# IWikiSyntaxProvider
@@ -329,6 +338,15 @@ class GitChangeset(Changeset):
 		'D': Changeset.DELETE 
 		}
 
+	# helper
+	def __parse_user_time(self, s):
+		"""parse author/committer attribute lines and return
+		(user,timestamp)"""
+		(user,time,tz_str) = s.rsplit(None, 2)
+		tz = FixedOffset((int(tz_str)*6)/10, tz_str)
+		time = datetime.fromtimestamp(float(time), tz)
+		return (user,time)
+
 	def __init__(self, git, sha):
 		self.git = git
 		try:
@@ -337,17 +355,15 @@ class GitChangeset(Changeset):
 			raise NoSuchChangeset(sha)
 		self.props = props
 
-		committer = props['committer'][0]
-
 		assert 'children' not in props
 		_children = list(git.children(sha))
 		if _children:
 			props['children'] = _children
 
-		(user,time,tz) = committer.rsplit(None, 2)
+		# use 1st committer as changeset owner/timestamp
+		(user_, time_) = self.__parse_user_time(props['committer'][0])
 
-		time = datetime.fromtimestamp(float(time), utc)
-		Changeset.__init__(self, sha, msg, user, time)
+		Changeset.__init__(self, sha, msg, user_, time_)
 
 	def get_properties(self):
 		properties = {}
@@ -356,9 +372,10 @@ class GitChangeset(Changeset):
 		if 'children' in self.props:
 			properties['Children'] = self.props['children']
 		if 'committer' in self.props:
-			properties['git-committer'] = "\n".join(self.props['committer'])
+			properties['git-committer'] = \
+			    self.__parse_user_time(self.props['committer'][0])
 		if 'author' in self.props:
-			git_author = "\n".join(self.props['author'])
+			git_author = self.__parse_user_time(self.props['author'][0])
 			if not (properties.has_key('git-committer') and
 				properties['git-committer'] == git_author):
 				properties['git-author'] = git_author
