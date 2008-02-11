@@ -14,7 +14,7 @@
 
 from trac.core import *
 from trac.util import TracError, shorten_line
-from trac.util.datefmt import utc, FixedOffset
+from trac.util.datefmt import FixedOffset, to_timestamp
 from trac.versioncontrol.api import \
     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
@@ -202,10 +202,7 @@ class GitRepository(Repository):
 
 	def get_changesets(self, start, stop):
 		#print "get_changesets", start, stop
-		def to_unix(dt):
-			return time.mktime(dt.timetuple()) + dt.microsecond/1e6
-
-		for rev in self.git.history_timerange(to_unix(start), to_unix(stop)):
+		for rev in self.git.history_timerange(to_timestamp(start), to_timestamp(stop)):
 			yield self.get_changeset(rev)
 
 	def get_changeset(self, rev):
@@ -258,8 +255,8 @@ class GitRepository(Repository):
 
 		if rev_callback:
 			revs = set(self.git.all_revs()) - revs
-			for r in revs:
-				rev_callback(r)
+			for rev in revs:
+				rev_callback(rev)
 
 class GitNode(Node):
 	def __init__(self, git, path, rev, log, ls_tree_info=None):
@@ -327,8 +324,8 @@ class GitNode(Node):
 		if not self.isdir:
 			return
 
-		for e in self.git.ls_tree(self.rev, self.__git_path()):
-			yield GitNode(self.git, e[3], self.rev, self.log, e)
+		for ent in self.git.ls_tree(self.rev, self.__git_path()):
+			yield GitNode(self.git, ent[3], self.rev, self.log, ent)
 
 	def get_content_type(self):
 		if self.isdir:

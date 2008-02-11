@@ -264,7 +264,7 @@ class Storage:
         return self._git_call("rev-parse", ["--short", str(rev)]).strip()
 
     def get_branches(self):
-        "returns list of branches, with active (= HEAD) one being the first item"
+        "returns list of (local) branches, with active (= HEAD) one being the first item"
         result=[]
         for e in self._git_call_f("branch", ["-v", "--no-abbrev"]).readlines():
             (bname,bsha)=e[1:].strip().split()[:2]
@@ -275,10 +275,7 @@ class Storage:
         return result
 
     def get_tags(self):
-        result=[]
-        for e in self._git_call_f("tag", ["-l"]).readlines():
-            result.append(e.strip())
-        return result
+        return [e.strip() for e in self._git_call_f("tag", ["-l"]).readlines()]
 
     def ls_tree(self, rev, path=""):
         rev = str(rev) # paranoia
