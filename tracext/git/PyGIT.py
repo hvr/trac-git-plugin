@@ -12,6 +12,8 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
+from __future__ import with_statement
+
 import os, re, sys, time, weakref, threading
 from collections import deque
 #from traceback import print_stack
@@ -72,24 +74,21 @@ class StorageFactory:
     def __init__(self, repo, log, weak=True):
         self.logger = log
 
-        StorageFactory.__dict_lock.acquire()
-
-        try:
-            i = StorageFactory.__dict[repo]
-        except KeyError:
-            i = Storage(repo, log)
-            StorageFactory.__dict[repo] = i
-
-        # create or remove additional reference depending on 'weak' argument
-        if weak:
+        with StorageFactory.__dict_lock:
             try:
-                del StorageFactory.__dict_nonweak[repo]
+                i = StorageFactory.__dict[repo]
             except KeyError:
-                pass
-        else:
-            StorageFactory.__dict_nonweak[repo] = i
+                i = Storage(repo, log)
+                StorageFactory.__dict[repo] = i
 
-        StorageFactory.__dict_lock.release()
+                # create or remove additional reference depending on 'weak' argument
+                if weak:
+                    try:
+                        del StorageFactory.__dict_nonweak[repo]
+                    except KeyError:
+                        pass
+                else:
+                    StorageFactory.__dict_nonweak[repo] = i
 
         self.__inst = i
         self.__repo = repo
@@ -123,70 +122,65 @@ class Storage:
         return self._git_call_f(cmd, args).read()
 
     def _invalidate_caches(self,youngest_rev=None):
-        self._lock.acquire()
+        with self._lock:
+            rc = False
+            if self.last_youngest_rev != youngest_rev:
+                self.logger.debug("invalidated caches (%s != %s)" % (self.last_youngest_rev, youngest_rev))
+                rc = True
+                self._commit_db = None
+                self._oldest_rev = None
+                self.last_youngest_rev = None
 
-        rc = False
-
-        if self.last_youngest_rev != youngest_rev:
-            self.logger.debug("invalidated caches (%s != %s)" % (self.last_youngest_rev, youngest_rev))
-            rc = True
-            self._commit_db = None
-            self._oldest_rev = None
-            self.last_youngest_rev = None
-
-        self._lock.release()
-        return rc
+            return rc
 
     def get_commits(self):
-        self._lock.acquire()
-        if self._commit_db is None:
-            self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
-            new_db = {}
-            new_tags = set([])
-            parent = None
-            youngest = None
-            ord_rev = 0
-            for revs in self._git_call_f("rev-parse", ["--tags"]).readlines():
-                new_tags.add(revs.strip())
+        with self._lock:
+            if self._commit_db is None:
+                self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
+                new_db = {}
+                new_tags = set([])
+                parent = None
+                youngest = None
+                ord_rev = 0
+                for revs in self._git_call_f("rev-parse", ["--tags"]).readlines():
+                    new_tags.add(revs.strip())
 
-            for revs in self._git_call_f("rev-list", ["--parents", "--all"]).readlines():
-                revs = revs.strip().split()
+                for revs in self._git_call_f("rev-list", ["--parents", "--all"]).readlines():
+                    revs = revs.strip().split()
 
-                rev = revs[0]
-                parents = set(revs[1:])
+                    rev = revs[0]
+                    parents = set(revs[1:])
 
-                ord_rev += 1
+                    ord_rev += 1
 
-                if not youngest:
-                    youngest = rev
+                    if not youngest:
+                        youngest = rev
 
-                # new_db[rev] = (children(rev), parents(rev), ordinal_id(rev))
-                if new_db.has_key(rev):
-                    _children,_parents,_ord_rev = new_db[rev]
-                    assert _children
-                    assert not _parents
-                    assert _ord_rev == 0
-                    new_db[rev] = (_children, parents, ord_rev)
-                else:
-                    new_db[rev] = (set(), parents, ord_rev)
-
-                # update all parents(rev)'s children
-                for parent in parents:
-                    if new_db.has_key(parent):
-                        new_db[parent][0].add(rev)
+                    # new_db[rev] = (children(rev), parents(rev), ordinal_id(rev))
+                    if new_db.has_key(rev):
+                        _children,_parents,_ord_rev = new_db[rev]
+                        assert _children
+                        assert not _parents
+                        assert _ord_rev == 0
+                        new_db[rev] = (_children, parents, ord_rev)
                     else:
-                        new_db[parent] = (set([rev]), set(), 0) # dummy ordinal_id
+                        new_db[rev] = (set(), parents, ord_rev)
 
-            self._commit_db = new_db, parent, new_tags
-            self.last_youngest_rev = youngest
-            self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
+                    # update all parents(rev)'s children
+                    for parent in parents:
+                        if new_db.has_key(parent):
+                            new_db[parent][0].add(rev)
+                        else:
+                            new_db[parent] = (set([rev]), set(), 0) # dummy ordinal_id
 
-        self._lock.release()
+                self._commit_db = new_db, parent, new_tags
+                self.last_youngest_rev = youngest
+                self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
 
-        assert self._commit_db[1] is not None
-        assert self._commit_db[0] is not None
+            assert self._commit_db[1] is not None
+            assert self._commit_db[0] is not None
 
-        return self._commit_db[0]
+            return self._commit_db[0]
 
     def sync(self):
         rev = self._git_call("rev-list", ["--max-count=1", "--all"]).strip()
@@ -418,32 +412,47 @@ class Storage:
         return last_rev.strip()
 
     def diff_tree(self, tree1, tree2, path=""):
+        """calls `git diff-tree` and returns tuples of the kind
+        (mode1,mode2,obj1,obj2,action,path,path2)"""
+
+        # diff-tree returns records with the following structure:
+        # :<old-mode> <new-mode> <old-sha> <new-sha> <change> NUL <path> NUL [ <src-path> NUL ]
+
+        lines = self._git_call("diff-tree",
+                               ["-z", "-r",
+                                str(tree1) if tree1 else "--root",
+                                str(tree2),
+                                "--", path]).split('\0')
+
+        assert lines[-1] == ""
+        del lines[-1]
+
         if tree1 is None:
-            tree1 = "--root"
+            # if only one tree-sha is given on commandline,
+            # the first line is just the redundant tree-sha itself...
+            assert not lines[0].startswith(':')
+            del lines[0]
 
-        next_is_path = False
-        for chg in self._git_call("diff-tree", ["-z", "-r",
-                                                str(tree1),
-                                                str(tree2),
-                                                "--", path]).split('\0'):
-            if not chg:
-                assert not next_is_path
-                continue
+        chg = None
 
-            if next_is_path:
-                next_is_path = False
-                path = chg
-                yield (mode1,mode2,obj1,obj2,action,path)
-                continue
+        def __chg_tuple():
+            if len(chg) == 6:
+                chg.append(None)
+            assert len(chg) == 7
+            return tuple(chg)
 
-            if not chg.startswith(':'):
-                continue
+        for line in lines:
+            if line.startswith(':'):
+                if chg:
+                    yield __chg_tuple()
 
-            (mode1,mode2,obj1,obj2,action) = chg.split(None)
-            mode1 = mode1[1:]
-            next_is_path = True
+                chg = line[1:].split()
+                assert len(chg) == 5
+            else:
+                chg.append(line)
 
-        assert not next_is_path
+        if chg:
+            yield __chg_tuple()
 
 if __name__ == '__main__':
     import sys, logging
