@@ -339,7 +339,17 @@ class GitNode(Node):
 			yield (self.path, rev, Changeset.EDIT)
 
 	def get_last_modified(self):
-		return None
+		if not self.isfile:
+			return None
+
+		try:
+			msg, props = self.git.read_commit(self.rev)
+			user,ts = _parse_user_time(props['committer'][0])
+		except:
+			self.log.error("internal error (could not get timestamp from commit '%s')" % self.rev)
+			return None
+
+		return ts
 
 class GitChangeset(Changeset):
 
