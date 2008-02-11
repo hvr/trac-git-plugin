@@ -33,6 +33,16 @@ pkg_resources.require('Trac>=0.11dev')
 
 import PyGIT
 
+
+# helper
+def _parse_user_time(s):
+	"""parse author/committer attribute lines and return
+	(user,timestamp)"""
+	(user,time,tz_str) = s.rsplit(None, 2)
+	tz = FixedOffset((int(tz_str)*6)/10, tz_str)
+	time = datetime.fromtimestamp(float(time), tz)
+	return (user,time)
+
 class GitConnector(Component):
 	implements(IRepositoryConnector, IWikiSyntaxProvider, IPropertyRenderer)
 
@@ -66,8 +76,6 @@ class GitConnector(Component):
 	# IPropertyRenderer
 
 	# relied upon by GitChangeset
-
-	_rendered_props = ('Parents','Children','git-committer','git-author')
 
         def match_property(self, name, mode):
 		if name in ('Parents','Children','git-committer','git-author') \
@@ -162,7 +170,7 @@ class GitRepository(Repository):
 		return path and path.strip('/') or ''
 
 	def normalize_rev(self, rev):
-		if rev=='None' or rev == None or rev == '':
+		if not rev or rev=='None':
 			return self.get_youngest_rev()
 		normrev=self.git.verifyrev(rev)
 		if normrev is None:
@@ -173,7 +181,7 @@ class GitRepository(Repository):
 		return self.git.shortrev(self.normalize_rev(rev))
 
 	def get_node(self, path, rev=None):
-		return GitNode(self.git, path, rev)
+		return GitNode(self.git, path, rev, self.log)
 
 	def get_quickjump_entries(self, rev):
 		for bname,bsha in self.git.get_branches():
@@ -201,10 +209,9 @@ class GitRepository(Repository):
 		for chg in self.git.diff_tree(old_rev, new_rev, self.normalize_path(new_path)):
 			(mode1,mode2,obj1,obj2,action,path) = chg
 
-			if mode2[0] == '1' or mode2[0] == '1':
+			kind = Node.FILE
+			if mode2.startswith('04') or mode1.startswith('04'):
 				kind = Node.DIRECTORY
-			else:
-				kind = Node.FILE
 
 			change = GitChangeset.action_map[action]
 
@@ -244,89 +251,91 @@ class GitRepository(Repository):
 				rev_callback(r)
 
 class GitNode(Node):
-	def __init__(self, git, path, rev, ls_tree_info=None):
+	def __init__(self, git, path, rev, log, ls_tree_info=None):
+		self.log = log
 		self.git = git
-		self.sha = None
-		self.perm = None
-		self.data_len = None
+		self.fs_sha = None # points to either tree or blobs
+		self.fs_perm = None
+		self.fs_size = None
 
 		kind = Node.DIRECTORY
 		p = path.strip('/')
-		if p != "":
-                        if ls_tree_info == None or ls_tree_info == "":
-				ls_tree_info = git.ls_tree(rev, p)
-                                if ls_tree_info != []:
+		if p: # ie. not the root-tree
+                        if not ls_tree_info:
+				ls_tree_info = git.ls_tree(rev, p) or None
+                                if ls_tree_info:
                                         [ls_tree_info] = ls_tree_info
-                                else:
-                                        ls_tree_info = None
 
-			if ls_tree_info != None:
-				(self.perm, k, self.sha, fn) = ls_tree_info
-                        else:
-                                k = 'blob'
+			if not ls_tree_info:
+				raise NoSuchNode(path, rev)
 
-			rev = self.git.last_change(rev, p) # FIXME
+			(self.fs_perm, k, self.fs_sha, fn) = ls_tree_info
+
+			# fix-up to the last commit-rev that touched this node
+			rev = self.git.last_change(rev, p)
 
 			if k=='tree':
 				pass
 			elif k=='blob':
 				kind = Node.FILE
 			else:
-				self.log.debug("kind is "+k)
-
-		Node.__init__(self, path, rev, kind)
+				raise TracError("internal error (got unexpected object kind '%s')" % k)
 
 		self.created_path = path
 		self.created_rev = rev
 
-	def get_content(self):
-		#print "get_content ", self.path, self.sha
-		if self.isfile:
-			return self.git.get_file(self.sha)
+		Node.__init__(self, path, rev, kind)
 
-		return None
+	def __git_path(self):
+		"return path as expected by PyGIT"
+		p = self.path.strip('/')
+		if self.isfile:
+			assert p
+			return p
+		if self.isdir:
+			return p and (p + '/')
+
+		raise TracError("internal error")
+
+	def get_content(self):
+		if not self.isfile:
+			return None
+
+		return self.git.get_file(self.fs_sha)
 
 	def get_properties(self):
-		if self.perm:
-			return {'mode': self.perm }
-		return {}
+		return self.fs_perm and {'mode': self.fs_perm } or {}
 
 	def get_annotations(self):
-		p = self.path.strip('/')
 		if not self.isfile:
 			return
 
-		result = []
-		for brev,blineno in self.git.blame(self.rev, p):
-			result.append(brev)
-
-		return result
+		return [ rev for (rev,lineno) in self.git.blame(self.rev, self.__git_path()) ]
 
 	def get_entries(self):
 		if not self.isdir:
 			return
 
-		p = self.path.strip('/')
-		if p != '': p = p + '/'
-		for e in self.git.ls_tree(self.rev, p):
-			yield GitNode(self.git, e[3], self.rev, e)
+		for e in self.git.ls_tree(self.rev, self.__git_path()):
+			yield GitNode(self.git, e[3], self.rev, self.log, e)
 
 	def get_content_type(self):
 		if self.isdir:
 			return None
+
 		return ''
 
 	def get_content_length(self):
-		if self.isfile:
-			if not self.data_len:
-				self.data_len = self.git.get_obj_size(self.sha)
-			return self.data_len
-		return None
+		if not self.isfile:
+			return None
+
+		if self.fs_size is None:
+			self.fs_size = self.git.get_obj_size(self.fs_sha)
+
+		return self.fs_size
 
 	def get_history(self, limit=None):
-		#print "get_history", limit, self.path
-		p = self.path.strip('/')
-		for rev in self.git.history(self.rev, p, limit):
+		for rev in self.git.history(self.rev, self.__git_path(), limit):
 			yield (self.path, rev, Changeset.EDIT)
 
 	def get_last_modified(self):
@@ -339,15 +348,6 @@ class GitChangeset(Changeset):
 		'M': Changeset.EDIT,
 		'D': Changeset.DELETE 
 		}
-
-	# helper
-	def __parse_user_time(self, s):
-		"""parse author/committer attribute lines and return
-		(user,timestamp)"""
-		(user,time,tz_str) = s.rsplit(None, 2)
-		tz = FixedOffset((int(tz_str)*6)/10, tz_str)
-		time = datetime.fromtimestamp(float(time), tz)
-		return (user,time)
 
 	def __init__(self, git, sha):
 		self.git = git
@@ -363,7 +363,7 @@ class GitChangeset(Changeset):
 			props['children'] = _children
 
 		# use 1st committer as changeset owner/timestamp
-		(user_, time_) = self.__parse_user_time(props['committer'][0])
+		(user_, time_) = _parse_user_time(props['committer'][0])
 
 		Changeset.__init__(self, sha, msg, user_, time_)
 
@@ -375,9 +375,9 @@ class GitChangeset(Changeset):
 			properties['Children'] = self.props['children']
 		if 'committer' in self.props:
 			properties['git-committer'] = \
-			    self.__parse_user_time(self.props['committer'][0])
+			    _parse_user_time(self.props['committer'][0])
 		if 'author' in self.props:
-			git_author = self.__parse_user_time(self.props['author'][0])
+			git_author = _parse_user_time(self.props['author'][0])
 			if not (properties.has_key('git-committer') and
 				properties['git-committer'] == git_author):
 				properties['git-author'] = git_author
@@ -389,8 +389,9 @@ class GitChangeset(Changeset):
 		prev = self.props.has_key('parent') and self.props['parent'][0] or None
 		for chg in self.git.diff_tree(prev, self.rev):
 			(mode1,mode2,obj1,obj2,action,path) = chg
+
 			kind = Node.FILE
-			if mode1[0:1] == '04' or mode2[0:1] == '04':
+			if mode2.startswith('04') or mode1.startswith('04'):
 				kind = Node.DIRECTORY
 
 			change = GitChangeset.action_map[action]
