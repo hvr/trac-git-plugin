@@ -201,7 +201,6 @@ class GitRepository(Repository):
 			yield 'tags', t, '/', t
 
 	def get_changesets(self, start, stop):
-		#print "get_changesets", start, stop
 		for rev in self.git.history_timerange(to_timestamp(start), to_timestamp(stop)):
 			yield self.get_changeset(rev)
 
@@ -210,9 +209,9 @@ class GitRepository(Repository):
 		return GitChangeset(self.git, rev)
 
 	def get_changes(self, old_path, old_rev, new_path, new_rev):
+		# TODO: handle renames/copies
 		if old_path != new_path:
 			raise TracError("not supported in git_fs")
-		#print "get_changes", (old_path, old_rev, new_path, new_rev)
 
 		for chg in self.git.diff_tree(old_rev, new_rev, self.normalize_path(new_path)):
 			(mode1,mode2,obj1,obj2,action,path,path2) = chg
@@ -343,6 +342,7 @@ class GitNode(Node):
 		return self.fs_size
 
 	def get_history(self, limit=None):
+		# TODO: find a way to follow renames/copies
 		for is_last,rev in _last_iterable(self.git.history(self.rev, self.__git_path(), limit)):
 			yield (self.path, rev, Changeset.EDIT if not is_last else Changeset.ADD)
 
@@ -364,7 +364,9 @@ class GitChangeset(Changeset):
 	action_map = {
 		'A': Changeset.ADD,
 		'M': Changeset.EDIT,
-		'D': Changeset.DELETE 
+		'D': Changeset.DELETE,
+		'R': Changeset.MOVE,
+		'C': Changeset.COPY
 		}
 
 	def __init__(self, git, sha):
@@ -402,20 +404,28 @@ class GitChangeset(Changeset):
 		return properties
 
 	def get_changes(self):
-		# TODO: handle renames/removals
+		paths_seen = set()
 		for parent in self.props.get('parent', [None]):
-			for mode1,mode2,obj1,obj2,action,path,path2 in \
-				    self.git.diff_tree(parent, self.rev):
-				p_path, p_rev = path, parent
+			for mode1,mode2,obj1,obj2,action,path1,path2 in \
+				    self.git.diff_tree(parent, self.rev, find_renames=True):
+				path = path2 or path1
+				p_path, p_rev = path1, parent
 
 				kind = Node.FILE
 				if mode2.startswith('04') or mode1.startswith('04'):
 					kind = Node.DIRECTORY
 
-				action = GitChangeset.action_map[action]
+				action = GitChangeset.action_map[action[0]]
 
 				if action == Changeset.ADD:
 					p_path = ''
 					p_rev = None
+
+				# CachedRepository expects unique (rev, path, change_type) key
+				# this is only an issue in case of merges where files required editing
+				if path in paths_seen:
+					continue
+
+				paths_seen.add(path)
 
 				yield (path, kind, action, p_path, p_rev)

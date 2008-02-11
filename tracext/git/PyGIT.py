@@ -302,15 +302,13 @@ class Storage:
             raise GitErrorSha
 
         line = lines.pop(0)
-        d = {}
-        while line != "":
-            (key,value)=line.split(None, 1)
-            if not d.has_key(key):
-                d[key] = []
-            d[key].append(value.strip())
+        props = {}
+        while line:
+            (key,value) = line.split(None, 1)
+            props.setdefault(key,[]).append(value.strip())
             line = lines.pop(0)
 
-        return ("\n".join(lines),d)
+        return ("\n".join(lines), props)
 
     def get_file(self, sha):
         return self._git_call_f("cat-file", ["blob", str(sha)])
@@ -408,18 +406,21 @@ class Storage:
                                   ["--max-count=1", sha, "--", path])
         return last_rev.strip()
 
-    def diff_tree(self, tree1, tree2, path=""):
+    def diff_tree(self, tree1, tree2, path="", find_renames=False):
         """calls `git diff-tree` and returns tuples of the kind
-        (mode1,mode2,obj1,obj2,action,path,path2)"""
+        (mode1,mode2,obj1,obj2,action,path1,path2)"""
 
         # diff-tree returns records with the following structure:
-        # :<old-mode> <new-mode> <old-sha> <new-sha> <change> NUL <path> NUL [ <src-path> NUL ]
+        # :<old-mode> <new-mode> <old-sha> <new-sha> <change> NUL <old-path> NUL [ <new-path> NUL ]
 
-        lines = self._git_call("diff-tree",
-                               ["-z", "-r",
-                                str(tree1) if tree1 else "--root",
-                                str(tree2),
-                                "--", path]).split('\0')
+        diff_tree_args = ["-z", "-r"]
+        if find_renames:
+            diff_tree_args.append("-M")
+        diff_tree_args.extend([str(tree1) if tree1 else "--root",
+                               str(tree2),
+                               "--", path])
+
+        lines = self._git_call("diff-tree", diff_tree_args).split('\0')
 
         assert lines[-1] == ""
         del lines[-1]
