@@ -20,7 +20,7 @@ from trac.versioncontrol.api import \
 from trac.wiki import IWikiSyntaxProvider
 from trac.versioncontrol.cache import CachedRepository
 from trac.versioncontrol.web_ui import IPropertyRenderer
-from trac.config import _TRUE_VALUES as TRUE
+from trac.config import BoolOption
 
 from genshi.builder import tag
 from genshi.core import Markup, escape
@@ -106,24 +106,28 @@ class GitConnector(Component):
 	#######################
 	# IRepositoryConnector
 
+	_persistent_cache = BoolOption('git', 'persistent_cache', 'false',
+				       "enable persistent caching of commit tree")
+
+	_cached_repository = BoolOption('git', 'cached_repository', 'false',
+					"wrap `GitRepository` in `CachedRepository`")
+
 	def get_supported_types(self):
 		yield ("git", 8)
 
 	def get_repository(self, type, dir, authname):
 		"""GitRepository factory method"""
+		assert type == "git"
+
 		if not self._version:
 			raise TracError("GIT backend not available")
 		elif not self._version['v_compatible']:
 			raise TracError("GIT version %s installed not compatible (need >= %s)" %
 					(self._version['v_str'], self._version['v_min_str']))
 
-		options = dict(self.config.options(type))
+		repos = GitRepository(dir, self.log, persistent_cache=self._persistent_cache)
 
-		repos = GitRepository(dir, self.log, options)
-
-		cached_repository = 'cached_repository' in options and options['cached_repository'] in TRUE
-
-		if cached_repository:
+		if self._cached_repository:
 			repos = CachedRepository(self.env.get_db_cnx(), repos, None, self.log)
 			self.log.info("enabled CachedRepository for '%s'" % dir)
 		else:
@@ -132,11 +136,9 @@ class GitConnector(Component):
 		return repos
 
 class GitRepository(Repository):
-	def __init__(self, path, log, options):
+	def __init__(self, path, log, persistent_cache=False):
 		self.logger = log
 		self.gitrepo = path
-
-		persistent_cache = 'persistent_cache' in options and options['persistent_cache'] in TRUE
 
 		self.git = PyGIT.StorageFactory(path, log, not persistent_cache).getInstance()
 		Repository.__init__(self, "git:"+path, None, log)
