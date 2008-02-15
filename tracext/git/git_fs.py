@@ -61,7 +61,7 @@ class GitConnector(Component):
 		self._version = None
 
 		try:
-			self._version = PyGIT.git_version()
+			self._version = PyGIT.Storage.git_version()
 		except PyGIT.GitError, e:
 			self.log.error("GitError: "+e.message)
 

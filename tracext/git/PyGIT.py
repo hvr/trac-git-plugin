@@ -51,26 +51,6 @@ class GitCore:
         return partial(self.__execute, name.replace('_','-'))
 
 
-GIT_VERSION_MIN_REQUIRED = (1,5,2) # for PyGit.Storage
-
-def git_version():
-    try:
-        g = GitCore()
-        output = g.version()
-        [v] = output.readlines()
-        [a,b,version] = v.strip().split()
-        split_version = tuple(map(int, version.split('.')))
-
-        result = {}
-        result['v_str'] = version
-        result['v_tuple'] = split_version
-        result['v_min_tuple'] = GIT_VERSION_MIN_REQUIRED
-        result['v_min_str'] = ".".join(map(str, GIT_VERSION_MIN_REQUIRED))
-        result['v_compatible'] = split_version >= GIT_VERSION_MIN_REQUIRED
-        return result
-    except:
-        raise GitError("Could not retrieve GIT version")
-
 # helper class for caching...
 class SizedDict(dict):
     def __init__(self, max_size=0):
@@ -133,6 +113,26 @@ class StorageFactory:
         return self.__inst
 
 class Storage:
+    @staticmethod
+    def git_version():
+        GIT_VERSION_MIN_REQUIRED = (1,5,2)
+        try:
+            g = GitCore()
+            output = g.version()
+            [v] = output.readlines()
+            [a,b,version] = v.strip().split()
+            split_version = tuple(map(int, version.split('.')))
+
+            result = {}
+            result['v_str'] = version
+            result['v_tuple'] = split_version
+            result['v_min_tuple'] = GIT_VERSION_MIN_REQUIRED
+            result['v_min_str'] = ".".join(map(str, GIT_VERSION_MIN_REQUIRED))
+            result['v_compatible'] = split_version >= GIT_VERSION_MIN_REQUIRED
+            return result
+        except:
+            raise GitError("Could not retrieve GIT version")
+
     def __init__(self, git_dir, log):
         self.logger = log
         self.logger.debug("PyGIT.Storage instance %d constructed" % id(self))
