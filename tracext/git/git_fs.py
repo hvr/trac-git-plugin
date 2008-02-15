@@ -68,7 +68,7 @@ class GitConnector(Component):
 		if self._version:
 			self.log.info("detected GIT version %s" % self._version['v_str'])
 			self.env.systeminfo.append(('GIT', self._version['v_str']))
-			if self._version['v_compatible']:
+			if not self._version['v_compatible']:
 				self.log.error("GIT version %s installed not compatible (need >= %s)" %
 					       (self._version['v_str'], self._version['v_min_str']))
 
