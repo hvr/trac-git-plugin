@@ -22,6 +22,11 @@ from trac.versioncontrol.cache import CachedRepository
 from trac.versioncontrol.web_ui import IPropertyRenderer
 from trac.config import BoolOption
 
+# for some reason CachedRepository doesn't pass-through short_rev()s
+class CachedRepository2(CachedRepository):
+	def short_rev(self, path):
+		return self.repos.short_rev(path)
+
 from genshi.builder import tag
 from genshi.core import Markup, escape
 
@@ -147,7 +152,7 @@ class GitConnector(Component):
 		repos = GitRepository(dir, self.log, persistent_cache=self._persistent_cache)
 
 		if self._cached_repository:
-			repos = CachedRepository(self.env.get_db_cnx(), repos, None, self.log)
+			repos = CachedRepository2(self.env.get_db_cnx(), repos, None, self.log)
 			self.log.info("enabled CachedRepository for '%s'" % dir)
 		else:
 			self.log.info("disabled CachedRepository for '%s'" % dir)
