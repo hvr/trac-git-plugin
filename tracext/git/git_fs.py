@@ -208,8 +208,8 @@ class GitRepository(Repository):
 		"""GitChangeset factory method"""
 		return GitChangeset(self.git, rev)
 
-	def get_changes(self, old_path, old_rev, new_path, new_rev):
-		# TODO: handle renames/copies
+	def get_changes(self, old_path, old_rev, new_path, new_rev, ignore_ancestry=0):
+		# TODO: handle renames/copies, ignore_ancestry
 		if old_path != new_path:
 			raise TracError("not supported in git_fs")
 
