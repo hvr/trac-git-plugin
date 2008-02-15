@@ -14,10 +14,13 @@
 
 from __future__ import with_statement
 
-import os, re, sys, time, weakref, threading
+import os, re, sys, time, weakref
 from collections import deque
 from functools import partial
+from threading import Lock
 #from traceback import print_stack
+
+__all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
 
 class GitError(Exception):
     pass
@@ -25,11 +28,8 @@ class GitError(Exception):
 class GitErrorSha(GitError):
     pass
 
-GIT_BIN = "git"
-GIT_VERSION_MIN_REQUIRED = (1,5,2)
-
 class GitCore:
-    def __init__(self, git_dir=None, git_bin=GIT_BIN):
+    def __init__(self, git_dir=None, git_bin="git"):
         self.__git_bin = git_bin
         self.__git_dir = git_dir
 
@@ -50,6 +50,9 @@ class GitCore:
     def __getattr__(self, name):
         return partial(self.__execute, name.replace('_','-'))
 
+
+GIT_VERSION_MIN_REQUIRED = (1,5,2) # for PyGit.Storage
+
 def git_version():
     try:
         g = GitCore()
@@ -68,10 +71,38 @@ def git_version():
     except:
         raise GitError("Could not retrieve GIT version")
 
+# helper class for caching...
+class SizedDict(dict):
+    def __init__(self, max_size=0):
+        dict.__init__(self)
+        self.__max_size = max_size
+        self.__key_fifo = deque()
+        self.__lock = Lock()
+
+    def __setitem__(self, name, value):
+        with self.__lock:
+            assert len(self) == len(self.__key_fifo) # invariant
+
+            if not self.__contains__(name):
+                self.__key_fifo.append(name)
+
+            rc = dict.__setitem__(self, name, value)
+
+            while len(self.__key_fifo) > self.__max_size:
+                self.__delitem__(self.__key_fifo.popleft())
+
+            assert len(self) == len(self.__key_fifo) # invariant
+
+            return rc
+
+    def setdefault(k,d=None):
+        # TODO
+        raise AttributeError("SizedDict has no setdefault() method")
+
 class StorageFactory:
     __dict = weakref.WeakValueDictionary()
     __dict_nonweak = dict()
-    __dict_lock = threading.Lock()
+    __dict_lock = Lock()
 
     def __init__(self, repo, log, weak=True):
         self.logger = log
@@ -111,9 +142,17 @@ class Storage:
 
         self.commit_encoding = None
 
-        self._lock = threading.Lock()
+        self._lock = Lock()
         self.last_youngest_rev = -1
         self._invalidate_caches()
+
+        # cache the last 200 commit messages
+        self.__commit_msg_cache = SizedDict(200)
+        self.__commit_msg_lock = Lock()
+
+        # cache the last 2000 file sizes
+        self.__fs_obj_size_cache = SizedDict(2000)
+        self.__fs_obj_size_lock = Lock()
 
     def __del__(self):
         self.logger.debug("PyGIT.Storage instance %d destructed" % id(self))
@@ -280,30 +319,43 @@ class Storage:
         return [e.split(None, 3) for e in \
                     self.repo.ls_tree("-z", rev, "--", path).read().split('\0') if e]
 
-    def read_commit(self, sha):
-        if not sha:
-            raise GitErrorSha
+    def read_commit(self, commit_id):
+        if not commit_id:
+            raise GitErrorCommit_Id
+
+        commit_id = str(commit_id)
 
         db = self.get_commits()
-        if sha not in db:
-            self.logger.info("read_commit failed for '%s'" % sha)
+        if commit_id not in db:
+            self.logger.info("read_commit failed for '%s'" % commit_id)
             raise GitErrorSha
 
-        raw = self.repo.cat_file("commit", str(sha)).read()
-        raw = unicode(raw, self.get_commit_encoding(), 'replace')
-        lines = raw.splitlines()
+        with self.__commit_msg_lock:
+            if self.__commit_msg_cache.has_key(commit_id):
+                # cache hit
+                result = self.__commit_msg_cache[commit_id]
+                return result[0], dict(result[1])
 
-        if not lines:
-            raise GitErrorSha
+            # cache miss
+            raw = self.repo.cat_file("commit", commit_id).read()
+            raw = unicode(raw, self.get_commit_encoding(), 'replace')
+            lines = raw.splitlines()
 
-        line = lines.pop(0)
-        props = {}
-        while line:
-            (key,value) = line.split(None, 1)
-            props.setdefault(key,[]).append(value.strip())
+            if not lines:
+                raise GitErrorSha
+
             line = lines.pop(0)
+            props = {}
+            while line:
+                (key,value) = line.split(None, 1)
+                props.setdefault(key,[]).append(value.strip())
+                line = lines.pop(0)
 
-        return ("\n".join(lines), props)
+            result = ("\n".join(lines), props)
+
+            self.__commit_msg_cache[commit_id] = result
+
+            return result[0], dict(result[1])
 
     def get_file(self, sha):
         return self.repo.cat_file("blob", str(sha))
@@ -311,9 +363,16 @@ class Storage:
     def get_obj_size(self, sha):
         sha = str(sha)
         try:
-            return int(self.repo.cat_file("-s", sha).read().strip())
+            with self.__fs_obj_size_lock:
+                if self.__fs_obj_size_cache.has_key(sha):
+                    obj_size = self.__fs_obj_size_cache[sha]
+                else:
+                    obj_size = int(self.repo.cat_file("-s", sha).read().strip())
+                    self.__fs_obj_size_cache[sha] = obj_size
         except ValueError:
             raise GitErrorSha("object '%s' not found" % sha)
+
+        return obj_size
 
     def children(self, sha):
         db = self.get_commits()
