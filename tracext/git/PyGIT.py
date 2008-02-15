@@ -113,6 +113,8 @@ class StorageFactory:
         return self.__inst
 
 class Storage:
+    __SREV_MIN = 6 # minimum short-rev length
+
     @staticmethod
     def git_version():
         GIT_VERSION_MIN_REQUIRED = (1,5,2)
@@ -174,6 +176,7 @@ class Storage:
             if self._commit_db is None:
                 self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
                 new_db = {}
+                new_sdb = {}
                 new_tags = set([])
                 parent = None
                 youngest = None
@@ -185,6 +188,10 @@ class Storage:
                     revs = revs.strip().split()
 
                     rev = revs[0]
+
+                    # shortrev "hash" map
+                    new_sdb.setdefault(rev[:self.__SREV_MIN], set()).add(rev)
+
                     parents = set(revs[1:])
 
                     ord_rev += 1
@@ -209,7 +216,7 @@ class Storage:
                         else:
                             new_db[parent] = (set([rev]), set(), 0) # dummy ordinal_id
 
-                self._commit_db = new_db, parent, new_tags
+                self._commit_db = new_db, parent, new_tags, new_sdb
                 self.last_youngest_rev = youngest
                 self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
 
@@ -296,7 +303,33 @@ class Storage:
 
     def shortrev(self, rev):
         "try to shorten sha id"
-        return self.repo.rev_parse("--short", str(rev)).read().strip()
+        #try to emulate the following:
+        #return self.repo.rev_parse("--short", str(rev)).read().strip()
+
+        rev = str(rev)
+
+        db = self.get_commits()
+        sdb = self._commit_db[3]
+
+        if rev not in db:
+            return rev
+
+        srev = rev[:self.__SREV_MIN]
+        srevs = sdb[srev]
+
+        if len(srevs) == 1:
+            return srev # we already got a unique id
+
+        # find a shortened id for which rev doesn't conflict with
+        # the other ones from srevs
+        crevs = srevs - set([rev])
+
+        for l in range(self.__SREV_MIN+1, 40):
+            srev = rev[:l]
+            if srev not in [ r[:l] for r in crevs ]:
+                return srev
+
+        return rev # worst-case, all except the last character match
 
     def get_branches(self):
         "returns list of (local) branches, with active (= HEAD) one being the first item"
@@ -503,9 +536,9 @@ class Storage:
             yield __chg_tuple()
 
 if __name__ == '__main__':
-    import sys, logging
+    import sys, logging, timeit
 
-    print "git version [%s]" % str(git_version())
+    print "git version [%s]" % str(Storage.git_version())
 
     g = Storage(sys.argv[1], logging)
 
@@ -547,6 +580,21 @@ if __name__ == '__main__':
         return seen
 
     print len(check4loops(g.parents(g.head())[0]))
+
+    #p = g.head()
+    #revs = [ g.history_relative_rev(p, i) for i in range(0,10) ]
+    revs = g.get_commits().keys()
+
+    def shortrev_test():
+        for i in revs:
+            i = str(i)
+            s = g.shortrev(i)
+            assert i.startswith(s)
+
+    iters = 1
+    print "timing %d*shortrev_test()..." % len(revs)
+    t = timeit.Timer("shortrev_test()", "from __main__ import shortrev_test")
+    print "%.2f usec/rev" % (1000000 * t.timeit(number=iters)/len(revs))
 
     #print len(check4loops(g.oldest_rev()))
 
