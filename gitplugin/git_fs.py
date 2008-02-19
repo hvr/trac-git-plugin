@@ -104,8 +104,9 @@ class GitRepository(Repository):
 		for chg in self.git.diff_tree(old_rev, new_rev, self.normalize_path(new_path)):
 			#print chg
 			(mode1,mode2,obj1,obj2,action,path) = chg
+
 			kind = Node.FILE
-			if mode2[0] == '1' or mode2[0] == '1':
+			if mode2.startswith('04') or mode1.startswith('04'):
 				kind = Node.DIRECTORY
 
 			if action == 'A':
@@ -257,8 +258,9 @@ class GitChangeset(Changeset):
 		for chg in self.git.diff_tree(prev, self.rev):
 			#print chg
 			(mode1,mode2,obj1,obj2,action,path) = chg
+
 			kind = Node.FILE
-			if mode1[0:1] == '04' or mode2[0:1] == '04':
+			if mode2.startswith('04') or mode1.startswith('04'):
 				kind = Node.DIRECTORY
 
 			if action == 'A':
