@@ -50,6 +50,14 @@ class GitCore:
     def __getattr__(self, name):
         return partial(self.__execute, name.replace('_','-'))
 
+    @staticmethod
+    def is_sha(sha):
+        """returns whether sha is a potential sha id
+        (i.e. proper hexstring between 4 and 40 characters"""
+        if len(sha) < 4 or len(sha) > 40:
+            return False
+        HEXCHARS = "0123456789abcdefABCDEF"
+        return all(s in HEXCHARS for s in sha)
 
 # helper class for caching...
 class SizedDict(dict):
@@ -116,6 +124,14 @@ class Storage:
     __SREV_MIN = 4 # minimum short-rev length
 
     @staticmethod
+    def __rev_key(rev):
+        assert len(rev) >= 4
+        #assert GitCore.is_sha(rev)
+        srev_key = int(rev[:4], 16)
+        assert srev_key >= 0 and srev_key <= 0xffff
+        return srev_key
+
+    @staticmethod
     def git_version():
         GIT_VERSION_MIN_REQUIRED = (1,5,2)
         try:
@@ -151,14 +167,13 @@ class Storage:
 
         self.logger.debug("PyGIT.Storage instance %d constructed" % id(self))
 
-        self.git_dir = git_dir
         self.repo = GitCore(git_dir)
 
         self.commit_encoding = None
 
-        self._lock = Lock()
-        self.last_youngest_rev = -1
-        self._invalidate_caches()
+        # caches
+        self.__rev_cache = None
+        self.__rev_cache_lock = Lock()
 
         # cache the last 200 commit messages
         self.__commit_msg_cache = SizedDict(200)
@@ -171,28 +186,37 @@ class Storage:
     def __del__(self):
         self.logger.debug("PyGIT.Storage instance %d destructed" % id(self))
 
-    def _invalidate_caches(self,youngest_rev=None):
-        with self._lock:
-            rc = False
-            if self.last_youngest_rev != youngest_rev:
-                self.logger.debug("invalidated caches (%s != %s)" % (self.last_youngest_rev, youngest_rev))
-                rc = True
-                self._commit_db = None
-                self._oldest_rev = None
-                self.last_youngest_rev = None
+    #
+    # cache handling
+    #
 
-            return rc
+    # called by Storage.sync()
+    def __rev_cache_sync(self, youngest_rev=None):
+        "invalidates revision db cache if necessary"
+        with self.__rev_cache_lock:
+            need_update = False
+            if self.__rev_cache:
+                last_youngest_rev = self.__rev_cache[0]
+                if last_youngest_rev != youngest_rev:
+                    self.logger.debug("invalidated caches (%s != %s)" % (last_youngest_rev, youngest_rev))
+                    need_update = True
+            else:
+                need_update = True # almost NOOP
 
-    def get_commits(self):
-        with self._lock:
-            if self._commit_db is None:
+            if need_update:
+                self.__rev_cache = None
+
+            return need_update
+
+    def get_rev_cache(self):
+        with self.__rev_cache_lock:
+            if self.__rev_cache is None: # can be cleared by Storage.__rev_cache_sync()
                 self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
                 new_db = {}
                 new_sdb = {}
                 new_tags = set([])
-                parent = None
                 youngest = None
-                ord_rev = 0
+                oldest = None
                 for revs in self.repo.rev_parse("--tags").readlines():
                     new_tags.add(revs.strip())
 
@@ -202,6 +226,7 @@ class Storage:
                     rev = str(rev)
                     return __rev_seen.setdefault(rev, rev)
 
+                ord_rev = 0
                 for revs in self.repo.rev_list("--parents", "--all").readlines():
                     revs = revs.strip().split()
 
@@ -210,14 +235,14 @@ class Storage:
                     rev = revs[0]
 
                     # shortrev "hash" map
-                    srev_key = int(rev[:self.__SREV_MIN], 16)
-                    assert srev_key >= 0 and srev_key <= 0xffff
+                    srev_key = self.__rev_key(rev)
                     new_sdb.setdefault(srev_key, []).append(rev)
 
                     parents = tuple(revs[1:])
 
                     ord_rev += 1
 
+                    # first rev seen is assumed to be the youngest one (and has ord_rev=1)
                     if not youngest:
                         youngest = rev
 
@@ -240,52 +265,59 @@ class Storage:
                         if rev not in _children:
                             _children.append(rev)
 
+                # last rev seen is assumed to be the oldest one (with highest ord_rev)
+                oldest = rev
+
                 __rev_seen = None
+
+                assert len(new_db) == ord_rev
 
                 # convert children lists to tuples
                 tmp = {}
-                while True:
-                    try:
+                try:
+                    while True:
                         k,v = new_db.popitem()
+                        assert v[2] > 0
                         tmp[k] = tuple(v[0]),v[1],v[2]
-                    except KeyError:
-                        break
+                except KeyError:
+                    pass
+
                 assert len(new_db) == 0
                 new_db = tmp
 
                 # convert sdb either to dict or array depending on size
                 tmp = [()]*(max(new_sdb.keys())+1) if len(new_sdb) > 5000 else {}
 
-                while True:
-                    try:
+                try:
+                    while True:
                         k,v = new_sdb.popitem()
                         tmp[k] = tuple(v)
-                    except KeyError:
-                        break
+                except KeyError:
+                    pass
 
                 assert len(new_sdb) == 0
                 new_sdb = tmp
 
-                # atomically update self._commit_db
-                self._commit_db = new_db, parent, new_tags, new_sdb
-                self.last_youngest_rev = youngest
+                # atomically update self.__rev_cache
+                self.__rev_cache = youngest, oldest, new_db, new_tags, new_sdb
                 self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
 
-            assert all([ e is not None for e in self._commit_db])
+            assert all(e is not None for e in self.__rev_cache)
 
-            return self._commit_db[0]
+            return self.__rev_cache
+        # with self.__rev_cache_lock
 
-    def sync(self):
-        rev = self.repo.rev_list("--max-count=1", "--all").read().strip()
-        return self._invalidate_caches(rev)
+    # tuple: youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict
+    rev_cache = property(get_rev_cache)
+
+    def get_commits(self):
+        return self.rev_cache[2]
 
     def oldest_rev(self):
-        self.get_commits() # trigger commit tree db build
-        return self._commit_db[1]
+        return self.rev_cache[1]
 
     def youngest_rev(self):
-        self.get_commits() # trigger commit tree db build
-        return self.last_youngest_rev
+        return self.rev_cache[0]
 
     def history_relative_rev(self, sha, rel_pos):
         db = self.get_commits()
@@ -327,14 +359,17 @@ class Storage:
 
     def verifyrev(self, rev):
         "verify/lookup given revision object and return a sha id or None if lookup failed"
-        db = self.get_commits()
-        tag_db = self._commit_db[2]
-
         rev = str(rev)
 
-        if db.has_key(rev):
-            return rev
+        db, tag_db = self.rev_cache[2:4]
 
+        if GitCore.is_sha(rev):
+            # maybe it's a short or full rev
+            fullrev = self.fullrev(rev)
+            if fullrev:
+                return fullrev
+
+        # fall back to external git calls
         rc = self.repo.rev_parse("--verify", rev).read().strip()
         if not rc:
             return None
@@ -351,22 +386,22 @@ class Storage:
 
         return None
 
-    def shortrev(self, rev):
+    def shortrev(self, rev, min_len=7):
         "try to shorten sha id"
         #try to emulate the following:
         #return self.repo.rev_parse("--short", str(rev)).read().strip()
-
         rev = str(rev)
 
-        db = self.get_commits()
-        sdb = self._commit_db[3]
+        if min_len < self.__SREV_MIN:
+            min_len = self.__SREV_MIN
+
+        db, tag_db, sdb = self.rev_cache[2:5]
 
         if rev not in db:
-            return rev
+            return None
 
-        srev = rev[:self.__SREV_MIN]
-        srev_key = int(srev, 16)
-        srevs = set(sdb[srev_key])
+        srev = rev[:min_len]
+        srevs = set(sdb[self.__rev_key(rev)])
 
         if len(srevs) == 1:
             return srev # we already got a unique id
@@ -375,12 +410,32 @@ class Storage:
         # the other ones from srevs
         crevs = srevs - set([rev])
 
-        for l in range(self.__SREV_MIN+1, 40):
+        for l in range(min_len+1, 40):
             srev = rev[:l]
             if srev not in [ r[:l] for r in crevs ]:
                 return srev
 
         return rev # worst-case, all except the last character match
+
+    def fullrev(self, srev):
+        "try to reverse shortrev()"
+        srev = str(srev)
+        db, tag_db, sdb = self.rev_cache[2:5]
+
+        # short-cut
+        if len(srev) == 40 and srev in db:
+            return srev
+
+        if not GitCore.is_sha(srev):
+            return None
+
+        srevs = sdb[self.__rev_key(srev)]
+
+        srevs = filter(lambda s: s.startswith(srev), srevs)
+        if len(srevs) == 1:
+            return srevs[0]
+
+        return None
 
     def get_branches(self):
         "returns list of (local) branches, with active (= HEAD) one being the first item"
@@ -494,15 +549,23 @@ class Storage:
         except KeyError:
             return []
 
+    def all_revs(self):
+        return self.get_commits().iterkeys()
+
+    def sync(self):
+        rev = self.repo.rev_list("--max-count=1", "--all").read().strip()
+        return self.__rev_cache_sync(rev)
+
+    def last_change(self, sha, path):
+        return self.repo.rev_list("--max-count=1",
+                                  sha, "--", path).read().strip() or None
+
     def history(self, sha, path, limit=None):
         if limit is None:
             limit = -1
         for rev in self.repo.rev_list("--max-count=%d" % limit,
                                       str(sha), "--", path).readlines():
             yield rev.strip()
-
-    def all_revs(self):
-        return self.get_commits().iterkeys()
 
     def history_timerange(self, start, stop):
         for rev in self.repo.rev_list("--reverse",
@@ -536,9 +599,6 @@ class Storage:
                 in_metadata = True
 
         assert not in_metadata
-
-    def last_change(self, sha, path):
-        return self.repo.rev_list("--max-count=1", sha, "--", path).read().strip() or None
 
     def diff_tree(self, tree1, tree2, path="", find_renames=False):
         """calls `git diff-tree` and returns tuples of the kind
@@ -617,9 +677,13 @@ if __name__ == '__main__':
 
     print "statm =", proc_statm()
     __data_size = proc_statm()[5]
+    __data_size_last = __data_size
 
     def print_data_usage():
-        print "DATA:", proc_statm()[5] - __data_size
+	global __data_size_last
+	__tmp = proc_statm()[5]
+        print "DATA: %6d %+6d" % (__tmp - __data_size, __tmp - __data_size_last)
+	__data_size_last = __tmp
 
     print_data_usage()
 
@@ -678,8 +742,9 @@ if __name__ == '__main__':
     def shortrev_test():
         for i in revs:
             i = str(i)
-            s = g.shortrev(i)
+            s = g.shortrev(i, min_len=4)
             assert i.startswith(s)
+            assert g.fullrev(s) == i
 
     iters = 1
     print "timing %d*shortrev_test()..." % len(revs)
@@ -687,7 +752,6 @@ if __name__ == '__main__':
     print "%.2f usec/rev" % (1000000 * t.timeit(number=iters)/len(revs))
 
     #print len(check4loops(g.oldest_rev()))
-
     #print len(list(g.children_recursive(g.oldest_rev())))
 
     print_data_usage()
@@ -703,3 +767,13 @@ if __name__ == '__main__':
             msg = g.read_commit(last_rev)
 
             print "%s %s %10d [%s]" % (type, last_rev, s, name)
+
+    print "allocating 2nd instance"
+    print_data_usage()
+    g2 = Storage(sys.argv[1], logging)
+    g2.head()
+    print_data_usage()
+    print "allocating 3rd instance"
+    g3 = Storage(sys.argv[1], logging)
+    g3.head()
+    print_data_usage()
