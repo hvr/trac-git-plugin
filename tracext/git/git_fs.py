@@ -20,7 +20,7 @@ from trac.versioncontrol.api import \
 from trac.wiki import IWikiSyntaxProvider
 from trac.versioncontrol.cache import CachedRepository
 from trac.versioncontrol.web_ui import IPropertyRenderer
-from trac.config import BoolOption
+from trac.config import BoolOption, IntOption
 
 # for some reason CachedRepository doesn't pass-through short_rev()s
 class CachedRepository2(CachedRepository):
@@ -136,6 +136,10 @@ class GitConnector(Component):
 	_cached_repository = BoolOption('git', 'cached_repository', 'false',
 					"wrap `GitRepository` in `CachedRepository`")
 
+	_shortrev_len = IntOption('git', 'shortrev_len', 7,
+				  "length rev sha sums should be tried to abbreviated to"
+				  " (must be >= 4 and <= 40)")
+
 	def get_supported_types(self):
 		yield ("git", 8)
 
@@ -149,7 +153,9 @@ class GitConnector(Component):
 			raise TracError("GIT version %s installed not compatible (need >= %s)" %
 					(self._version['v_str'], self._version['v_min_str']))
 
-		repos = GitRepository(dir, self.log, persistent_cache=self._persistent_cache)
+		repos = GitRepository(dir, self.log,
+				      persistent_cache=self._persistent_cache,
+				      shortrev_len=self._shortrev_len)
 
 		if self._cached_repository:
 			repos = CachedRepository2(self.env.get_db_cnx(), repos, None, self.log)
@@ -160,9 +166,10 @@ class GitConnector(Component):
 		return repos
 
 class GitRepository(Repository):
-	def __init__(self, path, log, persistent_cache=False):
+	def __init__(self, path, log, persistent_cache=False, shortrev_len=7):
 		self.logger = log
 		self.gitrepo = path
+		self._shortrev_len = max(4, min(shortrev_len, 40))
 
 		self.git = PyGIT.StorageFactory(path, log, not persistent_cache).getInstance()
 		Repository.__init__(self, "git:"+path, None, log)
@@ -194,7 +201,7 @@ class GitRepository(Repository):
 		return normrev
 
 	def short_rev(self, rev):
-		return self.git.shortrev(self.normalize_rev(rev))
+		return self.git.shortrev(self.normalize_rev(rev), min_len=self._shortrev_len)
 
 	def get_node(self, path, rev=None):
 		return GitNode(self.git, path, rev, self.log)
