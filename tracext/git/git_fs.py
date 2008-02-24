@@ -36,9 +36,6 @@ import time, sys
 if not sys.version_info[:2] >= (2,5):
 	raise TracError("python >= 2.5 dependancy not met")
 
-import pkg_resources
-pkg_resources.require('Trac>=0.11dev')
-
 import PyGIT
 
 def _last_iterable(iterable):
