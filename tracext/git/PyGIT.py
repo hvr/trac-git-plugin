@@ -113,7 +113,7 @@ class StorageFactory:
         return self.__inst
 
 class Storage:
-    __SREV_MIN = 6 # minimum short-rev length
+    __SREV_MIN = 4 # minimum short-rev length
 
     @staticmethod
     def git_version():
@@ -184,15 +184,25 @@ class Storage:
                 for revs in self.repo.rev_parse("--tags").readlines():
                     new_tags.add(revs.strip())
 
+                # helper for reusing strings
+                __rev_seen = {}
+                def __rev_reuse(rev):
+                    rev = str(rev)
+                    return __rev_seen.setdefault(rev, rev)
+
                 for revs in self.repo.rev_list("--parents", "--all").readlines():
                     revs = revs.strip().split()
+
+                    revs = map(__rev_reuse, revs)
 
                     rev = revs[0]
 
                     # shortrev "hash" map
-                    new_sdb.setdefault(rev[:self.__SREV_MIN], set()).add(rev)
+                    srev_key = int(rev[:self.__SREV_MIN], 16)
+                    assert srev_key >= 0 and srev_key <= 0xffff
+                    new_sdb.setdefault(srev_key, []).append(rev)
 
-                    parents = set(revs[1:])
+                    parents = tuple(revs[1:])
 
                     ord_rev += 1
 
@@ -205,23 +215,51 @@ class Storage:
                         assert _children
                         assert not _parents
                         assert _ord_rev == 0
-                        new_db[rev] = (_children, parents, ord_rev)
                     else:
-                        new_db[rev] = (set(), parents, ord_rev)
+                        _children = []
+
+                    # create/update entry
+                    new_db[rev] = _children, parents, ord_rev
 
                     # update all parents(rev)'s children
                     for parent in parents:
-                        if new_db.has_key(parent):
-                            new_db[parent][0].add(rev)
-                        else:
-                            new_db[parent] = (set([rev]), set(), 0) # dummy ordinal_id
+                        # by default, a dummy ordinal_id is used for the mean-time
+                        _children, _parents, _ord_rev = new_db.setdefault(parent, ([], [], 0))
+                        if rev not in _children:
+                            _children.append(rev)
 
+                __rev_seen = None
+
+                # convert children lists to tuples
+                tmp = {}
+                while True:
+                    try:
+                        k,v = new_db.popitem()
+                        tmp[k] = tuple(v[0]),v[1],v[2]
+                    except KeyError:
+                        break
+                assert len(new_db) == 0
+                new_db = tmp
+
+                # convert sdb either to dict or array depending on size
+                tmp = [()]*(max(new_sdb.keys())+1) if len(new_sdb) > 5000 else {}
+
+                while True:
+                    try:
+                        k,v = new_sdb.popitem()
+                        tmp[k] = tuple(v)
+                    except KeyError:
+                        break
+
+                assert len(new_sdb) == 0
+                new_sdb = tmp
+
+                # atomically update self._commit_db
                 self._commit_db = new_db, parent, new_tags, new_sdb
                 self.last_youngest_rev = youngest
                 self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
 
-            assert self._commit_db[1] is not None
-            assert self._commit_db[0] is not None
+            assert all([ e is not None for e in self._commit_db])
 
             return self._commit_db[0]
 
@@ -315,7 +353,8 @@ class Storage:
             return rev
 
         srev = rev[:self.__SREV_MIN]
-        srevs = sdb[srev]
+        srev_key = int(srev, 16)
+        srevs = set(sdb[srev_key])
 
         if len(srevs) == 1:
             return srev # we already got a unique id
@@ -428,7 +467,7 @@ class Storage:
             p = work_list.popleft()
             yield p
 
-            _children = db[p][0] - seen
+            _children = set(db[p][0]) - seen
 
             seen.update(_children)
             work_list.extend(_children)
@@ -535,18 +574,54 @@ class Storage:
         if chg:
             yield __chg_tuple()
 
+############################################################################
+############################################################################
+############################################################################
+
 if __name__ == '__main__':
     import sys, logging, timeit
 
     print "git version [%s]" % str(Storage.git_version())
 
+    # custom linux hack reading `/proc/<PID>/statm`
+    if sys.platform == "linux2":
+        __pagesize = os.sysconf('SC_PAGESIZE')
+
+        def proc_statm(pid = os.getpid()):
+            __proc_statm = '/proc/%d/statm' % pid
+            try:
+                t = open(__proc_statm)
+                result = t.read().split()
+                t.close()
+                assert len(result) == 7
+                return tuple([ __pagesize*int(p) for p in result ])
+            except:
+                raise RuntimeError("failed to get memory stats")
+
+    else: # not linux2
+        print "WARNING - meminfo.proc_statm() not available"
+        def proc_statm():
+            return (0,)*7
+
+    print "statm =", proc_statm()
+    __data_size = proc_statm()[5]
+
+    def print_data_usage():
+        print "DATA:", proc_statm()[5] - __data_size
+
+    print_data_usage()
+
     g = Storage(sys.argv[1], logging)
+
+    print_data_usage()
 
     print "[%s]" % g.head()
     print g.ls_tree(g.head())
     print "--------------"
+    print_data_usage()
     print g.read_commit(g.head())
     print "--------------"
+    print_data_usage()
     p = g.parents(g.head())
     print list(p)
     print "--------------"
@@ -558,11 +633,12 @@ if __name__ == '__main__':
     print g.get_branches()
     print "--------------"
     print g.hist_prev_revision(g.oldest_rev()), g.oldest_rev(), g.hist_next_revision(g.oldest_rev())
-
+    print_data_usage()
     print "--------------"
     p = g.youngest_rev()
     print g.hist_prev_revision(p), p, g.hist_next_revision(p)
     print "--------------"
+
     p = g.head()
     for i in range(-5,5):
         print i, g.history_relative_rev(p, i)
@@ -583,7 +659,9 @@ if __name__ == '__main__':
 
     #p = g.head()
     #revs = [ g.history_relative_rev(p, i) for i in range(0,10) ]
+    print_data_usage()
     revs = g.get_commits().keys()
+    print_data_usage()
 
     def shortrev_test():
         for i in revs:
@@ -599,3 +677,17 @@ if __name__ == '__main__':
     #print len(check4loops(g.oldest_rev()))
 
     #print len(list(g.children_recursive(g.oldest_rev())))
+
+    print_data_usage()
+
+    # perform typical trac operations:
+
+    if 0:
+        print "--------------"
+        rev = g.head()
+        for mode,type,sha,name in g.ls_tree(rev):
+            [last_rev] = g.history(rev, name, limit=1)
+            s = g.get_obj_size(sha) if type == "blob" else 0
+            msg = g.read_commit(last_rev)
+
+            print "%s %s %10d [%s]" % (type, last_rev, s, name)
