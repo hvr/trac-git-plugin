@@ -92,14 +92,14 @@ class StorageFactory:
     __dict_nonweak = dict()
     __dict_lock = Lock()
 
-    def __init__(self, repo, log, weak=True):
+    def __init__(self, repo, log, weak=True, git_bin='git'):
         self.logger = log
 
         with StorageFactory.__dict_lock:
             try:
                 i = StorageFactory.__dict[repo]
             except KeyError:
-                i = Storage(repo, log)
+                i = Storage(repo, log, git_bin)
                 StorageFactory.__dict[repo] = i
 
                 # create or remove additional reference depending on 'weak' argument
@@ -132,14 +132,25 @@ class Storage:
         return srev_key
 
     @staticmethod
-    def git_version():
+    def git_version(git_bin="git"):
         GIT_VERSION_MIN_REQUIRED = (1,5,2)
         try:
-            g = GitCore()
+            g = GitCore(git_bin=git_bin)
             output = g.version()
             [v] = output.readlines()
-            [a,b,version] = v.strip().split()
-            split_version = tuple(map(int, version.split('.')))
+            _,_,version = v.strip().split()
+            # 'version' has usually at least 3 numeric version components, e.g.::
+            #  1.5.4.2
+            #  1.5.4.3.230.g2db511
+            #  1.5.4.GIT
+
+            def try_int(s):
+                try:
+                    return int(s)
+                except ValueError:
+                    return s
+
+            split_version = tuple(map(try_int, version.split('.')))
 
             result = {}
             result['v_str'] = version
@@ -151,7 +162,7 @@ class Storage:
         except:
             raise GitError("Could not retrieve GIT version")
 
-    def __init__(self, git_dir, log):
+    def __init__(self, git_dir, log, git_bin='git'):
         self.logger = log
 
         # simple sanity checking
@@ -167,7 +178,7 @@ class Storage:
 
         self.logger.debug("PyGIT.Storage instance %d constructed" % id(self))
 
-        self.repo = GitCore(git_dir)
+        self.repo = GitCore(git_dir, git_bin=git_bin)
 
         self.commit_encoding = None
 
@@ -226,7 +237,7 @@ class Storage:
                     rev = str(rev)
                     return __rev_seen.setdefault(rev, rev)
 
-                ord_rev = 0
+                rev = ord_rev = 0
                 for revs in self.repo.rev_list("--parents", "--all").readlines():
                     revs = revs.strip().split()
 
@@ -429,7 +440,10 @@ class Storage:
         if not GitCore.is_sha(srev):
             return None
 
-        srevs = sdb[self.__rev_key(srev)]
+        try:
+            srevs = sdb[self.__rev_key(srev)]
+        except KeyError:
+            return None
 
         srevs = filter(lambda s: s.startswith(srev), srevs)
         if len(srevs) == 1:

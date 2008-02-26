@@ -20,7 +20,7 @@ from trac.versioncontrol.api import \
 from trac.wiki import IWikiSyntaxProvider
 from trac.versioncontrol.cache import CachedRepository
 from trac.versioncontrol.web_ui import IPropertyRenderer
-from trac.config import BoolOption, IntOption
+from trac.config import BoolOption, IntOption, PathOption, Option
 
 # for some reason CachedRepository doesn't pass-through short_rev()s
 class CachedRepository2(CachedRepository):
@@ -63,7 +63,7 @@ class GitConnector(Component):
 		self._version = None
 
 		try:
-			self._version = PyGIT.Storage.git_version()
+			self._version = PyGIT.Storage.git_version(git_bin=self._git_bin)
 		except PyGIT.GitError, e:
 			self.log.error("GitError: "+e.message)
 
@@ -134,8 +134,11 @@ class GitConnector(Component):
 					"wrap `GitRepository` in `CachedRepository`")
 
 	_shortrev_len = IntOption('git', 'shortrev_len', 7,
-				  "length rev sha sums should be tried to abbreviated to"
+				  "length rev sha sums should be tried to be abbreviated to"
 				  " (must be >= 4 and <= 40)")
+
+	_git_bin = PathOption('git', 'git_bin', 'git', "file name of git executable")
+
 
 	def get_supported_types(self):
 		yield ("git", 8)
@@ -152,6 +155,7 @@ class GitConnector(Component):
 
 		repos = GitRepository(dir, self.log,
 				      persistent_cache=self._persistent_cache,
+				      git_bin=self._git_bin,
 				      shortrev_len=self._shortrev_len)
 
 		if self._cached_repository:
@@ -163,12 +167,13 @@ class GitConnector(Component):
 		return repos
 
 class GitRepository(Repository):
-	def __init__(self, path, log, persistent_cache=False, shortrev_len=7):
+	def __init__(self, path, log, persistent_cache=False, git_bin='git', shortrev_len=7):
 		self.logger = log
 		self.gitrepo = path
 		self._shortrev_len = max(4, min(shortrev_len, 40))
 
-		self.git = PyGIT.StorageFactory(path, log, not persistent_cache).getInstance()
+		self.git = PyGIT.StorageFactory(path, log, not persistent_cache,
+						git_bin=git_bin).getInstance()
 		Repository.__init__(self, "git:"+path, None, log)
 
 	def close(self):
@@ -190,7 +195,7 @@ class GitRepository(Repository):
 		return path and path.strip('/') or ''
 
 	def normalize_rev(self, rev):
-		if not rev or rev=='None':
+		if not rev:
 			return self.get_youngest_rev()
 		normrev=self.git.verifyrev(rev)
 		if normrev is None:
