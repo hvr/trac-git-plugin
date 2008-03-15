@@ -167,10 +167,10 @@ class GitNode(Node):
                                 else:
                                         tree_ls_info = None
 
-			if tree_ls_info != None:
-				(self.perm,k,self.sha,fn) = tree_ls_info
-                        else:
-                                k = 'blob'
+			if tree_ls_info is None:
+				raise NoSuchNode(path, rev)
+
+			(self.perm,k,self.sha,fn) = tree_ls_info
 
 			rev=self.git.last_change(rev, p)
 
