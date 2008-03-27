@@ -18,5 +18,6 @@ setup(
     See http://trac-hacks.org/wiki/GitPlugin for more details.
     """,
     packages=['tracext', 'tracext.git'],
+    namespace_packages=['tracext'],
     entry_points = {'trac.plugins': 'git = tracext.git.git_fs'},
     data_files=['COPYING','README'])
