@@ -633,7 +633,7 @@ class Storage:
         assert lines[-1] == ""
         del lines[-1]
 
-        if tree1 is None:
+        if tree1 is None and lines:
             # if only one tree-sha is given on commandline,
             # the first line is just the redundant tree-sha itself...
             assert not lines[0].startswith(':')
