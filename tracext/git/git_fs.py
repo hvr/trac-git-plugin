@@ -249,7 +249,7 @@ class GitRepository(Repository):
 	def next_rev(self, rev, path=''):
 		return self.git.hist_next_revision(rev)
 
-	def previous_rev(self, rev):
+	def previous_rev(self, rev, path=''):
 		return self.git.hist_prev_revision(rev)
 
 	def rev_older_than(self, rev1, rev2):
