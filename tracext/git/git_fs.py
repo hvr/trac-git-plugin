@@ -375,13 +375,14 @@ class GitNode(Node):
 
 class GitChangeset(Changeset):
 
-	action_map = {
+	action_map = { # see also git-diff-tree(1) --diff-filter
 		'A': Changeset.ADD,
-		'M': Changeset.EDIT,
+		'M': Changeset.EDIT, # modified
+		'T': Changeset.EDIT, # file type (mode) change
 		'D': Changeset.DELETE,
-		'R': Changeset.MOVE,
+		'R': Changeset.MOVE, # renamed
 		'C': Changeset.COPY
-		}
+		} # TODO: U, X, B
 
 	def __init__(self, git, sha):
 		self.git = git
