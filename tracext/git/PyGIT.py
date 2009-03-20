@@ -238,7 +238,7 @@ class Storage:
                 new_tags = set([])
                 youngest = None
                 oldest = None
-                for revs in self.repo.rev_parse("--tags").readlines():
+                for revs in self.repo.rev_parse("--tags"):
                     new_tags.add(revs.strip())
 
                 # helper for reusing strings
@@ -248,7 +248,7 @@ class Storage:
                     return __rev_seen.setdefault(rev, rev)
 
                 rev = ord_rev = 0
-                for revs in self.repo.rev_list("--parents", "--all").readlines():
+                for revs in self.repo.rev_list("--parents", "--all"):
                     revs = revs.strip().split()
 
                     revs = map(__rev_reuse, revs)
@@ -464,7 +464,7 @@ class Storage:
     def get_branches(self):
         "returns list of (local) branches, with active (= HEAD) one being the first item"
         result=[]
-        for e in self.repo.branch("-v", "--no-abbrev").readlines():
+        for e in self.repo.branch("-v", "--no-abbrev"):
             (bname,bsha)=e[1:].strip().split()[:2]
             if e.startswith('*'):
                 result.insert(0,(bname,bsha))
@@ -473,7 +473,7 @@ class Storage:
         return result
 
     def get_tags(self):
-        return [e.strip() for e in self.repo.tag("-l").readlines()]
+        return [e.strip() for e in self.repo.tag("-l")]
 
     def ls_tree(self, rev, path=""):
         rev = str(rev) # paranoia
@@ -588,14 +588,14 @@ class Storage:
         if limit is None:
             limit = -1
         for rev in self.repo.rev_list("--max-count=%d" % limit,
-                                      str(sha), "--", path).readlines():
+                                      str(sha), "--", path):
             yield rev.strip()
 
     def history_timerange(self, start, stop):
         for rev in self.repo.rev_list("--reverse",
                                       "--max-age=%d" % start,
                                       "--min-age=%d" % stop,
-                                      "--all").readlines():
+                                      "--all"):
             yield rev.strip()
 
     def rev_is_anchestor_of(self, rev1, rev2):
@@ -607,7 +607,7 @@ class Storage:
     def blame(self, commit_sha, path):
         in_metadata = False
 
-        for line in self.repo.blame("-p", "--", path, str(commit_sha)).readlines():
+        for line in self.repo.blame("-p", "--", path, str(commit_sha)):
             assert line
             if in_metadata:
                 in_metadata = not line.startswith('\t')
