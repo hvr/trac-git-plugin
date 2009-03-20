@@ -18,6 +18,8 @@ import os, re, sys, time, weakref
 from collections import deque
 from functools import partial
 from threading import Lock
+from subprocess import Popen, PIPE
+import cStringIO
 #from traceback import print_stack
 
 __all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
@@ -33,19 +35,27 @@ class GitCore:
         self.__git_bin = git_bin
         self.__git_dir = git_dir
 
-    def __execute2(self, gitcmd, *args):
-        # construct command tuple
+    def __build_git_cmd(self, gitcmd, *args):
+        "construct command tuple for git call suitable for Popen()"
+
         cmd = [self.__git_bin]
         if self.__git_dir:
             cmd.append('--git-dir=%s' % self.__git_dir)
         cmd.append(gitcmd)
         cmd.extend(args)
 
-        #print >>sys.stderr, "GitCore '%s'" % str(cmd)
-        return os.popen3(cmd) # (input, output, error)
+        return cmd
 
     def __execute(self, git_cmd, *cmd_args):
-        return self.__execute2(git_cmd, *cmd_args)[1]
+        "execute git command and return file-like object of stdout"
+
+        p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
+                  stdin=None, stdout=PIPE, stderr=PIPE, close_fds=True)
+
+        stdout_data, stderr_data = p.communicate()
+        #TODO, do something with p.returncode, e.g. raise exception
+
+        return cStringIO.StringIO(stdout_data)
 
     def __getattr__(self, name):
         return partial(self.__execute, name.replace('_','-'))
