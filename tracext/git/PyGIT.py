@@ -479,8 +479,13 @@ class Storage:
         rev = str(rev) # paranoia
         if path.startswith('/'):
             path = path[1:]
-        return [e.split(None, 3) for e in \
-                    self.repo.ls_tree("-z", rev, "--", path).read().split('\0') if e]
+
+        if path:
+            tree = self.repo.ls_tree("-z", rev, "--", path)
+        else:
+            tree = self.repo.ls_tree("-z", rev)
+
+        return [e.split(None, 3) for e in tree.read().split('\0') if e]
 
     def read_commit(self, commit_id):
         if not commit_id:
