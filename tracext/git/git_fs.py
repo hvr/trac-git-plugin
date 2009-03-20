@@ -137,7 +137,7 @@ class GitConnector(Component):
 				  "length rev sha sums should be tried to be abbreviated to"
 				  " (must be >= 4 and <= 40)")
 
-	_git_bin = PathOption('git', 'git_bin', 'git', "file name of git executable")
+	_git_bin = PathOption('git', 'git_bin', '/usr/bin/git', "path to git executable (relative to trac project folder!)")
 
 
 	def get_supported_types(self):

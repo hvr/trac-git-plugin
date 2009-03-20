@@ -49,6 +49,8 @@ class GitCore:
     def __execute(self, git_cmd, *cmd_args):
         "execute git command and return file-like object of stdout"
 
+        #print >>sys.stderr, "DEBUG:", git_cmd, cmd_args
+
         p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
                   stdin=None, stdout=PIPE, stderr=PIPE, close_fds=True)
 
@@ -323,7 +325,7 @@ class Storage:
                 self.__rev_cache = youngest, oldest, new_db, new_tags, new_sdb
                 self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
 
-            assert all(e is not None for e in self.__rev_cache)
+            assert all(e is not None for e in self.__rev_cache) or not any(self.__rev_cache)
 
             return self.__rev_cache
         # with self.__rev_cache_lock
@@ -485,11 +487,17 @@ class Storage:
         else:
             tree = self.repo.ls_tree("-z", rev)
 
-        return [e.split(None, 3) for e in tree.read().split('\0') if e]
+        def split_ls_tree_line(l):
+            "split according to '<mode> <type> <sha>\t<fname>'"
+            meta,fname = l.split('\t')
+            _mode,_type,_sha = meta.split(' ')
+            return _mode,_type,_sha,fname
+
+        return [split_ls_tree_line(e) for e in tree.read().split('\0') if e]
 
     def read_commit(self, commit_id):
         if not commit_id:
-            raise GitErrorCommit_Id
+            raise GitError("read_commit called with empty commit_id")
 
         commit_id = str(commit_id)
 
