@@ -20,7 +20,6 @@ from functools import partial
 from threading import Lock
 from subprocess import Popen, PIPE
 import cStringIO
-#from traceback import print_stack
 
 __all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
 
@@ -62,14 +61,16 @@ class GitCore:
     def __getattr__(self, name):
         return partial(self.__execute, name.replace('_','-'))
 
-    @staticmethod
-    def is_sha(sha):
+    __is_sha_pat = re.compile(r'[0-9A-Fa-f]*$')
+
+    @classmethod
+    def is_sha(cls,sha):
         """returns whether sha is a potential sha id
         (i.e. proper hexstring between 4 and 40 characters"""
-        if len(sha) < 4 or len(sha) > 40:
+        if not (4 <= len(sha) <= 40):
             return False
-        HEXCHARS = "0123456789abcdefABCDEF"
-        return all(s in HEXCHARS for s in sha)
+
+        return bool(cls.__is_sha_pat.match(sha))
 
 # helper class for caching...
 class SizedDict(dict):
@@ -690,6 +691,12 @@ class Storage:
 if __name__ == '__main__':
     import sys, logging, timeit
 
+    assert not GitCore.is_sha("123")
+    assert GitCore.is_sha("1a3f")
+    assert GitCore.is_sha("f"*40)
+    assert not GitCore.is_sha("x"+"f"*39)
+    assert not GitCore.is_sha("f"*41)
+    
     print "git version [%s]" % str(Storage.git_version())
 
     # custom linux hack reading `/proc/<PID>/statm`
