@@ -146,7 +146,7 @@ class Storage:
 
     @staticmethod
     def git_version(git_bin="git"):
-        GIT_VERSION_MIN_REQUIRED = (1,5,2)
+        GIT_VERSION_MIN_REQUIRED = (1,5,6)
         try:
             g = GitCore(git_bin=git_bin)
             output = g.version()
@@ -203,9 +203,7 @@ class Storage:
         self.__commit_msg_cache = SizedDict(200)
         self.__commit_msg_lock = Lock()
 
-        # cache the last 2000 file sizes
-        self.__fs_obj_size_cache = SizedDict(2000)
-        self.__fs_obj_size_lock = Lock()
+
 
     def __del__(self):
         self.logger.debug("PyGIT.Storage instance %d destructed" % id(self))
@@ -483,18 +481,21 @@ class Storage:
         if path.startswith('/'):
             path = path[1:]
 
-        if path:
-            tree = self.repo.ls_tree("-z", rev, "--", path)
-        else:
-            tree = self.repo.ls_tree("-z", rev)
+        tree = self.repo.ls_tree("-z", "-l", rev, "--", path).read().split('\0')
 
         def split_ls_tree_line(l):
-            "split according to '<mode> <type> <sha>\t<fname>'"
+            "split according to '<mode> <type> <sha> <size>\t<fname>'"
             meta,fname = l.split('\t')
-            _mode,_type,_sha = meta.split(' ')
-            return _mode,_type,_sha,fname
+            _mode,_type,_sha,_size = meta.split()
 
-        return [split_ls_tree_line(e) for e in tree.read().split('\0') if e]
+            if _size == '-':
+                _size = None
+            else:
+                _size = int(_size)
+
+            return _mode,_type,_sha,_size,fname
+
+        return [ split_ls_tree_line(e) for e in tree if e ]
 
     def read_commit(self, commit_id):
         if not commit_id:
@@ -539,13 +540,9 @@ class Storage:
 
     def get_obj_size(self, sha):
         sha = str(sha)
+
         try:
-            with self.__fs_obj_size_lock:
-                if self.__fs_obj_size_cache.has_key(sha):
-                    obj_size = self.__fs_obj_size_cache[sha]
-                else:
-                    obj_size = int(self.repo.cat_file("-s", sha).read().strip())
-                    self.__fs_obj_size_cache[sha] = obj_size
+            obj_size = int(self.repo.cat_file("-s", sha).read().strip())
         except ValueError:
             raise GitErrorSha("object '%s' not found" % sha)
 
@@ -770,8 +767,6 @@ if __name__ == '__main__':
         for sha in g.children_recursive(head):
             if sha in seen:
                 print "dupe detected :-/", sha, len(seen)
-                #print seen
-                #break
             seen.add(sha)
         return seen
 
@@ -802,10 +797,10 @@ if __name__ == '__main__':
 
     # perform typical trac operations:
 
-    if 0:
+    if 1:
         print "--------------"
         rev = g.head()
-        for mode,type,sha,name in g.ls_tree(rev):
+        for mode,type,sha,_size,name in g.ls_tree(rev):
             [last_rev] = g.history(rev, name, limit=1)
             s = g.get_obj_size(sha) if type == "blob" else 0
             msg = g.read_commit(last_rev)

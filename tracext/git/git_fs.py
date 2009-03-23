@@ -290,7 +290,7 @@ class GitNode(Node):
 			if not ls_tree_info:
 				raise NoSuchNode(path, rev)
 
-			(self.fs_perm, k, self.fs_sha, fn) = ls_tree_info
+			(self.fs_perm, k, self.fs_sha, self.fs_size, fn) = ls_tree_info
 
 			# fix-up to the last commit-rev that touched this node
 			rev = self.git.last_change(rev, p)
@@ -338,7 +338,7 @@ class GitNode(Node):
 			return
 
 		for ent in self.git.ls_tree(self.rev, self.__git_path()):
-			yield GitNode(self.git, ent[3], self.rev, self.log, ent)
+			yield GitNode(self.git, ent[-1], self.rev, self.log, ent)
 
 	def get_content_type(self):
 		if self.isdir:
