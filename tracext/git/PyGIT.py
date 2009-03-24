@@ -693,7 +693,7 @@ if __name__ == '__main__':
     assert GitCore.is_sha("f"*40)
     assert not GitCore.is_sha("x"+"f"*39)
     assert not GitCore.is_sha("f"*41)
-    
+
     print "git version [%s]" % str(Storage.git_version())
 
     # custom linux hack reading `/proc/<PID>/statm`
@@ -721,10 +721,10 @@ if __name__ == '__main__':
     __data_size_last = __data_size
 
     def print_data_usage():
-	global __data_size_last
-	__tmp = proc_statm()[5]
+        global __data_size_last
+        __tmp = proc_statm()[5]
         print "DATA: %6d %+6d" % (__tmp - __data_size, __tmp - __data_size_last)
-	__data_size_last = __tmp
+        __data_size_last = __tmp
 
     print_data_usage()
 
