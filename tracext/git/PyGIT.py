@@ -51,8 +51,12 @@ class GitCore:
 
         #print >>sys.stderr, "DEBUG:", git_cmd, cmd_args
 
-        p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
-                  stdin=None, stdout=PIPE, stderr=PIPE, close_fds=True)
+        if sys.platform == "win32":
+            p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
+                      stdin=None, stdout=PIPE, stderr=PIPE)
+        else:
+            p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
+                      stdin=None, stdout=PIPE, stderr=PIPE, close_fds=True)
 
         stdout_data, stderr_data = p.communicate()
         #TODO, do something with p.returncode, e.g. raise exception
