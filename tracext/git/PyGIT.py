@@ -481,7 +481,7 @@ class Storage:
         return [e.strip() for e in self.repo.tag("-l").splitlines()]
 
     def ls_tree(self, rev, path=""):
-        rev = str(rev) # paranoia
+        rev = rev and str(rev) or 'HEAD' # paranoia
         if path.startswith('/'):
             path = path[1:]
 
@@ -646,6 +646,7 @@ class Storage:
         # diff-tree returns records with the following structure:
         # :<old-mode> <new-mode> <old-sha> <new-sha> <change> NUL <old-path> NUL [ <new-path> NUL ]
 
+        path = path.strip("/")
         diff_tree_args = ["-z", "-r"]
         if find_renames:
             diff_tree_args.append("-M")

@@ -192,7 +192,7 @@ class GitRepository(Repository):
                 return self.git.oldest_rev()
 
         def normalize_path(self, path):
-                return path and path.strip('/') or ''
+                return path and path.strip('/') or '/'
 
         def normalize_rev(self, rev):
                 if not rev:
@@ -278,6 +278,7 @@ class GitNode(Node):
                 self.fs_sha = None # points to either tree or blobs
                 self.fs_perm = None
                 self.fs_size = None
+                rev = rev and str(rev) or 'HEAD'
 
                 kind = Node.DIRECTORY
                 p = path.strip('/')
