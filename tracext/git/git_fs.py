@@ -26,6 +26,14 @@ from trac.config import BoolOption, IntOption, PathOption, Option
 class CachedRepository2(CachedRepository):
         def short_rev(self, path):
                 return self.repos.short_rev(path)
+        def normalize_rev(self, rev):
+                if not rev:
+                        return self.repos.get_youngest_rev()
+                normrev=self.repos.git.verifyrev(rev)
+                if normrev is None:
+                        raise NoSuchChangeset(rev)
+                return normrev
+
 
 from genshi.builder import tag
 from genshi.core import Markup, escape
@@ -143,7 +151,7 @@ class GitConnector(Component):
         def get_supported_types(self):
                 yield ("git", 8)
 
-        def get_repository(self, type, dir, authname):
+        def get_repository(self, type, dir, params):
                 """GitRepository factory method"""
                 assert type == "git"
 
@@ -153,13 +161,13 @@ class GitConnector(Component):
                         raise TracError("GIT version %s installed not compatible (need >= %s)" %
                                         (self._version['v_str'], self._version['v_min_str']))
 
-                repos = GitRepository(dir, self.log,
+                repos = GitRepository(dir, params, self.log,
                                       persistent_cache=self._persistent_cache,
                                       git_bin=self._git_bin,
                                       shortrev_len=self._shortrev_len)
 
                 if self._cached_repository:
-                        repos = CachedRepository2(self.env.get_db_cnx(), repos, None, self.log)
+                        repos = CachedRepository2(self.env, repos, self.log)
                         self.log.info("enabled CachedRepository for '%s'" % dir)
                 else:
                         self.log.info("disabled CachedRepository for '%s'" % dir)
@@ -167,14 +175,16 @@ class GitConnector(Component):
                 return repos
 
 class GitRepository(Repository):
-        def __init__(self, path, log, persistent_cache=False, git_bin='git', shortrev_len=7):
+        def __init__(self, path, params, log, persistent_cache=False,
+                        git_bin='git', shortrev_len=7):
                 self.logger = log
                 self.gitrepo = path
+                self.params = params
                 self._shortrev_len = max(4, min(shortrev_len, 40))
 
                 self.git = PyGIT.StorageFactory(path, log, not persistent_cache,
                                                 git_bin=git_bin).getInstance()
-                Repository.__init__(self, "git:"+path, None, log)
+                Repository.__init__(self, "git:"+path, self.params, log)
 
         def close(self):
                 self.git = None
@@ -206,7 +216,7 @@ class GitRepository(Repository):
                 return self.git.shortrev(self.normalize_rev(rev), min_len=self._shortrev_len)
 
         def get_node(self, path, rev=None):
-                return GitNode(self.git, path, rev, self.log)
+                return GitNode(self, path, rev, self.log)
 
         def get_quickjump_entries(self, rev):
                 for bname,bsha in self.git.get_branches():
@@ -220,7 +230,7 @@ class GitRepository(Repository):
 
         def get_changeset(self, rev):
                 """GitChangeset factory method"""
-                return GitChangeset(self.git, rev)
+                return GitChangeset(self, rev)
 
         def get_changes(self, old_path, old_rev, new_path, new_rev, ignore_ancestry=0):
                 # TODO: handle renames/copies, ignore_ancestry
@@ -259,7 +269,7 @@ class GitRepository(Repository):
         def clear(self, youngest_rev=None):
                 self.sync()
 
-        def sync(self, rev_callback=None):
+        def sync(self, rev_callback=None, clean=None):
                 if rev_callback:
                         revs = set(self.git.all_revs())
 
@@ -272,9 +282,9 @@ class GitRepository(Repository):
                                 rev_callback(rev)
 
 class GitNode(Node):
-        def __init__(self, git, path, rev, log, ls_tree_info=None):
+        def __init__(self, repos, path, rev, log, ls_tree_info=None):
                 self.log = log
-                self.git = git
+                self.repos = repos
                 self.fs_sha = None # points to either tree or blobs
                 self.fs_perm = None
                 self.fs_size = None
@@ -284,7 +294,7 @@ class GitNode(Node):
                 p = path.strip('/')
                 if p: # ie. not the root-tree
                         if not ls_tree_info:
-                                ls_tree_info = git.ls_tree(rev, p) or None
+                                ls_tree_info = repos.git.ls_tree(rev, p) or None
                                 if ls_tree_info:
                                         [ls_tree_info] = ls_tree_info
 
@@ -294,7 +304,7 @@ class GitNode(Node):
                         (self.fs_perm, k, self.fs_sha, self.fs_size, fn) = ls_tree_info
 
                         # fix-up to the last commit-rev that touched this node
-                        rev = self.git.last_change(rev, p)
+                        rev = repos.git.last_change(rev, p)
 
                         if k=='tree':
                                 pass
@@ -306,7 +316,7 @@ class GitNode(Node):
                 self.created_path = path
                 self.created_rev = rev
 
-                Node.__init__(self, path, rev, kind)
+                Node.__init__(self, repos, path, rev, kind)
 
         def __git_path(self):
                 "return path as expected by PyGIT"
@@ -323,7 +333,7 @@ class GitNode(Node):
                 if not self.isfile:
                         return None
 
-                return self.git.get_file(self.fs_sha)
+                return self.repos.git.get_file(self.fs_sha)
 
         def get_properties(self):
                 return self.fs_perm and {'mode': self.fs_perm } or {}
@@ -332,14 +342,14 @@ class GitNode(Node):
                 if not self.isfile:
                         return
 
-                return [ rev for (rev,lineno) in self.git.blame(self.rev, self.__git_path()) ]
+                return [ rev for (rev,lineno) in self.repos.git.blame(self.rev, self.__git_path()) ]
 
         def get_entries(self):
                 if not self.isdir:
                         return
 
-                for ent in self.git.ls_tree(self.rev, self.__git_path()):
-                        yield GitNode(self.git, ent[-1], self.rev, self.log, ent)
+                for ent in self.repos.git.ls_tree(self.rev, self.__git_path()):
+                        yield GitNode(self.repos, ent[-1], self.rev, self.log, ent)
 
         def get_content_type(self):
                 if self.isdir:
@@ -352,13 +362,13 @@ class GitNode(Node):
                         return None
 
                 if self.fs_size is None:
-                        self.fs_size = self.git.get_obj_size(self.fs_sha)
+                        self.fs_size = self.repos.git.get_obj_size(self.fs_sha)
 
                 return self.fs_size
 
         def get_history(self, limit=None):
                 # TODO: find a way to follow renames/copies
-                for is_last,rev in _last_iterable(self.git.history(self.rev, self.__git_path(), limit)):
+                for is_last,rev in _last_iterable(self.repos.git.history(self.rev, self.__git_path(), limit)):
                         yield (self.path, rev, Changeset.EDIT if not is_last else Changeset.ADD)
 
         def get_last_modified(self):
@@ -366,7 +376,7 @@ class GitNode(Node):
                         return None
 
                 try:
-                        msg, props = self.git.read_commit(self.rev)
+                        msg, props = self.repos.git.read_commit(self.rev)
                         user,ts = _parse_user_time(props['committer'][0])
                 except:
                         self.log.error("internal error (could not get timestamp from commit '%s')" % self.rev)
@@ -385,23 +395,23 @@ class GitChangeset(Changeset):
                 'C': Changeset.COPY
                 } # TODO: U, X, B
 
-        def __init__(self, git, sha):
-                self.git = git
+        def __init__(self, repos, sha):
+                self.repos = repos
                 try:
-                        (msg, props) = git.read_commit(sha)
+                        (msg, props) = repos.git.read_commit(sha)
                 except PyGIT.GitErrorSha:
                         raise NoSuchChangeset(sha)
                 self.props = props
 
                 assert 'children' not in props
-                _children = list(git.children(sha))
+                _children = list(repos.git.children(sha))
                 if _children:
                         props['children'] = _children
 
                 # use 1st committer as changeset owner/timestamp
                 (user_, time_) = _parse_user_time(props['committer'][0])
 
-                Changeset.__init__(self, sha, msg, user_, time_)
+                Changeset.__init__(self, repos, sha, msg, user_, time_)
 
         def get_properties(self):
                 properties = {}
@@ -423,7 +433,7 @@ class GitChangeset(Changeset):
                 paths_seen = set()
                 for parent in self.props.get('parent', [None]):
                         for mode1,mode2,obj1,obj2,action,path1,path2 in \
-                                    self.git.diff_tree(parent, self.rev, find_renames=True):
+                                    self.repos.git.diff_tree(parent, self.rev, find_renames=True):
                                 path = path2 or path1
                                 p_path, p_rev = path1, parent
 
