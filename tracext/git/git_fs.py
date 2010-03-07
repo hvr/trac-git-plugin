@@ -14,13 +14,14 @@
 
 from trac.core import *
 from trac.util import TracError, shorten_line
-from trac.util.datefmt import FixedOffset, to_timestamp
+from trac.util.datefmt import FixedOffset, to_timestamp, format_datetime
 from trac.versioncontrol.api import \
     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
 from trac.versioncontrol.cache import CachedRepository
 from trac.versioncontrol.web_ui import IPropertyRenderer
 from trac.config import BoolOption, IntOption, PathOption, Option
+from trac.web.chrome import Chrome
 
 # for some reason CachedRepository doesn't pass-through short_rev()s
 class CachedRepository2(CachedRepository):
@@ -107,8 +108,9 @@ class GitConnector(Component):
                                    sha_link(revs[-1]))
 
                 if name in ('git-committer', 'git-author'):
-                        user_,time_ = props[name]
-                        _str = user_ + " / " + time_.strftime('%Y-%m-%dT%H:%M:%SZ%z')
+                        user_, time_ = props[name]
+			_str = "%s (%s)" % (Chrome(self.env).format_author(context.req, user_),
+			                    format_datetime(time_, tzinfo=context.req.tz))
                         return unicode(_str)
 
                 raise TracError("internal error")
