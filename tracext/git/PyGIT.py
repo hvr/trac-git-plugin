@@ -505,11 +505,12 @@ class Storage:
         if not commit_id:
             raise GitError("read_commit called with empty commit_id")
 
-        commit_id = self.fullrev(commit_id)
+        commit_id, commit_id_orig = self.fullrev(commit_id), commit_id
 
         db = self.get_commits()
         if commit_id not in db:
-            self.logger.info("read_commit failed for '%s'" % commit_id)
+            self.logger.info("read_commit failed for '%s' ('%s')" %
+                             (commit_id, commit_id_orig))
             raise GitErrorSha
 
         with self.__commit_msg_lock:
