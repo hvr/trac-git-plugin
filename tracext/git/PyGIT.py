@@ -12,17 +12,33 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-from __future__ import with_statement
 
 import os, re, sys, time, weakref
 from collections import deque
-from functools import partial
 from threading import Lock
 from subprocess import Popen, PIPE
 import cStringIO
 import string
 
 __all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
+
+try:
+    all
+except NameError:
+    def all(iterable):
+        for i in iterable:
+            if not i:
+                return False
+        return True
+
+try:
+    any
+except NameError:
+    def any(iterable):
+        for i in iterable:
+            if i:
+                return True
+        return False
 
 class GitError(Exception):
     pass
@@ -64,7 +80,7 @@ class GitCore:
         return stdout_data
 
     def __getattr__(self, name):
-        return partial(self.__execute, name.replace('_','-'))
+        return lambda *args: self.__execute(name.replace('_','-'), *args)
 
     __is_sha_pat = re.compile(r'[0-9A-Fa-f]*$')
 
@@ -86,7 +102,8 @@ class SizedDict(dict):
         self.__lock = Lock()
 
     def __setitem__(self, name, value):
-        with self.__lock:
+        self.__lock.acquire()
+        try:
             assert len(self) == len(self.__key_fifo) # invariant
 
             if not self.__contains__(name):
@@ -101,6 +118,9 @@ class SizedDict(dict):
 
             return rc
 
+        finally:
+            self.__lock.release()
+
     def setdefault(k,d=None):
         # TODO
         raise AttributeError("SizedDict has no setdefault() method")
@@ -113,7 +133,8 @@ class StorageFactory:
     def __init__(self, repo, log, weak=True, git_bin='git'):
         self.logger = log
 
-        with StorageFactory.__dict_lock:
+        StorageFactory.__dict_lock.acquire()
+        try:
             try:
                 i = StorageFactory.__dict[repo]
             except KeyError:
@@ -128,6 +149,8 @@ class StorageFactory:
                         pass
                 else:
                     StorageFactory.__dict_nonweak[repo] = i
+        finally:
+            StorageFactory.__dict_lock.release()
 
         self.__inst = i
         self.__repo = repo
@@ -183,7 +206,7 @@ class Storage:
         self.logger = log
 
         # simple sanity checking
-        __git_file_path = partial(os.path.join, git_dir)
+        __git_file_path = lambda *args: os.path.join(git_dir, *args)
         if not all(map(os.path.exists,
                        map(__git_file_path,
                            ['HEAD','objects','refs']))):
@@ -219,7 +242,8 @@ class Storage:
     # called by Storage.sync()
     def __rev_cache_sync(self, youngest_rev=None):
         "invalidates revision db cache if necessary"
-        with self.__rev_cache_lock:
+        self.__rev_cache_lock.acquire()
+        try:
             need_update = False
             if self.__rev_cache:
                 last_youngest_rev = self.__rev_cache[0]
@@ -234,8 +258,12 @@ class Storage:
 
             return need_update
 
+        finally:
+            self.__rev_cache_lock.release()
+
     def get_rev_cache(self):
-        with self.__rev_cache_lock:
+        self.__rev_cache_lock.acquire()
+        try:
             if self.__rev_cache is None: # can be cleared by Storage.__rev_cache_sync()
                 self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
                 new_db = {}
@@ -312,7 +340,10 @@ class Storage:
                 new_db = tmp
 
                 # convert sdb either to dict or array depending on size
-                tmp = [()]*(max(new_sdb.keys())+1) if len(new_sdb) > 5000 else {}
+                if len(new_sdb) > 5000:
+                    tmp = [()]*(max(new_sdb.keys())+1)
+                else:
+                    tmp = {}
 
                 try:
                     while True:
@@ -331,7 +362,10 @@ class Storage:
             assert all(e is not None for e in self.__rev_cache) or not any(self.__rev_cache)
 
             return self.__rev_cache
-        # with self.__rev_cache_lock
+        # try:
+
+        finally:
+            self.__rev_cache_lock.release()
 
     # tuple: youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict
     rev_cache = property(get_rev_cache)
@@ -512,7 +546,8 @@ class Storage:
             self.logger.info("read_commit failed for '%s'" % commit_id)
             raise GitErrorSha
 
-        with self.__commit_msg_lock:
+        self.__commit_msg_lock.acquire()
+        try:
             if self.__commit_msg_cache.has_key(commit_id):
                 # cache hit
                 result = self.__commit_msg_cache[commit_id]
@@ -538,6 +573,9 @@ class Storage:
             self.__commit_msg_cache[commit_id] = result
 
             return result[0], dict(result[1])
+
+        finally:
+            self.__commit_msg_lock.release()
 
     def get_file(self, sha):
         return cStringIO.StringIO(self.repo.cat_file("blob", str(sha)))
@@ -650,8 +688,11 @@ class Storage:
         diff_tree_args = ["-z", "-r"]
         if find_renames:
             diff_tree_args.append("-M")
-        diff_tree_args.extend([str(tree1) if tree1 else "--root",
-                               str(tree2),
+        if tree1:
+            diff_tree_args.append(str(tree1))
+        else:
+            diff_tree_args.append("--root")
+        diff_tree_args.extend([str(tree2),
                                "--", path])
 
         lines = self.repo.diff_tree(*diff_tree_args).split('\0')
@@ -807,7 +848,10 @@ if __name__ == '__main__':
         rev = g.head()
         for mode,type,sha,_size,name in g.ls_tree(rev):
             [last_rev] = g.history(rev, name, limit=1)
-            s = g.get_obj_size(sha) if type == "blob" else 0
+            if type == "blob":
+                s = g.get_obj_size(sha)
+            else:
+                s = 0
             msg = g.read_commit(last_rev)
 
             print "%s %s %10d [%s]" % (type, last_rev, s, name)
