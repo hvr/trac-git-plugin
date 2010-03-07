@@ -84,16 +84,32 @@ class GitConnector(Component):
                                 self.log.error("GIT version %s installed not compatible (need >= %s)" %
                                                (self._version['v_str'], self._version['v_min_str']))
 
-        def _format_sha_link(self, formatter, ns, sha, label, fullmatch=None):
-                try:
-                        changeset = self.env.get_repository().get_changeset(sha)
-                        return tag.a(label, class_="changeset",
-                                     title=shorten_line(changeset.message),
-                                     href=formatter.href.changeset(sha))
-                except TracError, e:
-                        return tag.a(label, class_="missing changeset",
-                                     href=formatter.href.changeset(sha),
-                                     title=unicode(e), rel="nofollow")
+        def _format_sha_link(self, formatter, ns, sha, label, context=None):
+		reponame = ''
+		if context is None:
+			context = formatter.context
+		if formatter is None:
+			formatter = context # hack
+		while context:
+			if context.resource.realm in ('source', 'changeset'):
+				reponame = context.resource.parent.id
+				break
+			context = context.parent
+		repos = self.env.get_repository(reponame)
+		if repos:
+			try:
+				changeset = repos.get_changeset(sha)
+				return tag.a(label, class_="changeset",
+					     title=shorten_line(changeset.message),
+					     href=formatter.href.changeset(sha, reponame))
+			except Exception, e:
+				errmsg = to_unicode(e)
+		else:
+			errmsg = "Repository '%s' not found" % reponame
+
+		return tag.a(label, class_="missing changeset",
+			     #href=formatter.href.changeset(sha, reponame),
+			     title=to_unicode(errmsg), rel="nofollow")
 
         #######################
         # IPropertyRenderer
@@ -108,7 +124,7 @@ class GitConnector(Component):
 
         def render_property(self, name, mode, context, props):
                 def sha_link(sha):
-                        return self._format_sha_link(context, 'sha', sha, sha)
+                        return self._format_sha_link(None, 'sha', sha, sha, context=context)
 
                 if name in ('Parents','Children'):
                         revs = props[name]
