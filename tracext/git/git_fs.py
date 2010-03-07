@@ -15,6 +15,7 @@
 from trac.core import *
 from trac.util import TracError, shorten_line
 from trac.util.datefmt import FixedOffset, to_timestamp, format_datetime
+from trac.util.text import to_unicode
 from trac.versioncontrol.api import \
     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
@@ -446,4 +447,4 @@ class GitChangeset(Changeset):
 
                                 paths_seen.add(path)
 
-                                yield (path, kind, action, p_path, p_rev)
+                                yield (to_unicode(path), kind, action, to_unicode(p_path), p_rev)
