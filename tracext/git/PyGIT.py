@@ -42,6 +42,9 @@ class GitCore(object):
         self.__git_bin = git_bin
         self.__git_dir = git_dir
 
+    def __repr__(self):
+        return '<GitCore bin="%s" dir="%s">' % (self.__git_bin, self.__git_dir)
+
     def __build_git_cmd(self, gitcmd, *args):
         "construct command tuple for git call suitable for Popen()"
 
