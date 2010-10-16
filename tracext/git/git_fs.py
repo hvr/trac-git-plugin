@@ -70,7 +70,7 @@ def _parse_user_time(s):
     return user, time
 
 class GitConnector(Component):
-    implements(IRepositoryConnector, IWikiSyntaxProvider, IPropertyRenderer)
+    implements(IRepositoryConnector, IWikiSyntaxProvider)
 
     def __init__(self):
         self._version = None
@@ -88,6 +88,8 @@ class GitConnector(Component):
                                (self._version['v_str'], self._version['v_min_str']))
 
     def _format_sha_link(self, formatter, ns, sha, label, context=None):
+        # FIXME: this function needs serious rethinking...
+
         reponame = ''
         if context is None:
             context = formatter.context
@@ -114,34 +116,6 @@ class GitConnector(Component):
                      #href=formatter.href.changeset(sha, reponame),
                      title=to_unicode(errmsg), rel="nofollow")
 
-    #######################
-    # IPropertyRenderer
-
-    # relied upon by GitChangeset
-
-    def match_property(self, name, mode):
-        if name in ('Parents', 'Children', 'git-committer', 'git-author') \
-               and mode == 'revprop':
-            return 8 # default renderer has priority 1
-        return 0
-
-    def render_property(self, name, mode, context, props):
-        def sha_link(sha):
-            return self._format_sha_link(None, 'sha', sha, sha, context=context)
-
-        if name in ('Parents', 'Children'):
-            revs = props[name]
-
-            return tag([tag(sha_link(rev), ', ') for rev in revs[:-1]],
-                       sha_link(revs[-1]))
-
-        if name in ('git-committer', 'git-author'):
-            user_, time_ = props[name]
-            _str = "%s (%s)" % (Chrome(self.env).format_author(context.req, user_),
-                                format_datetime(time_, tzinfo=context.req.tz))
-            return unicode(_str)
-
-        raise TracError("internal error")
 
     #######################
     # IWikiSyntaxProvider
@@ -236,6 +210,77 @@ class GitConnector(Component):
             self.log.info("disabled CachedRepository for '%s'" % dir)
 
         return repos
+
+
+class CsetPropertyRenderer(Component):
+    implements(IPropertyRenderer)
+
+    # relied upon by GitChangeset
+    def match_property(self, name, mode):
+        # default renderer has priority 1
+        return (name in ('Parents',
+                         'Children',
+                         'git-committer',
+                         'git-author',
+                         ) and mode == 'revprop') and 4 or 0
+
+    def render_property(self, name, mode, context, props):
+
+        def sha_link(sha):
+            try:
+                reponame = context.resource.parent.id
+                repos = self.env.get_repository(reponame)
+                cset = repos.get_changeset(sha)
+                return tag.a(repos.display_rev(sha), class_="changeset",
+                             title=shorten_line(cset.message),
+                             href=context.href.changeset(sha, repos.reponame))
+
+            except Exception, e:
+                errmsg = to_unicode(e)
+                return tag.a(sha, class_="missing changeset",
+                             title=to_unicode(errmsg), rel="nofollow")
+
+        if name in ('Parents', 'Children'):
+            revs = props[name] # list of commit ids
+
+            if name == 'Parents' and len(revs) > 1:
+                # we got a merge...
+                current_sha = context.resource.id
+                reponame = context.resource.parent.id
+
+                parent_links = [(sha_link(rev),
+                                 ' (',
+                                 tag.a('diff',
+                                       title="Diff against this parent (show the changes merged from the other parents)",
+                                       href=context.href.changeset(current_sha, reponame, old=rev)),
+                                 ')')
+                                for rev in revs]
+
+                return tag([(parent, ', ') for parent in parent_links[:-1]],
+                           parent_links[-1],
+                           tag.br(),
+                           tag.span(tag("Note: this is a ", tag.strong('merge'), " changeset, "
+                                        "the changes displayed below correspond "
+                                        "to the merge itself."),
+                                    class_='hint'),
+                           tag.br(),
+                           tag.span(tag("Use the ", tag.tt('(diff)'), " links above"
+                                        " to see all the changes relative to each parent."),
+                                    class_='hint'))
+
+            # simple non-merge commit
+            return tag([tag(sha_link(rev), ', ') for rev in revs[:-1]],
+                       sha_link(revs[-1]))
+
+        if name in ('git-committer', 'git-author'):
+            user_, time_ = props[name]
+            _str = "%s (%s)" % (Chrome(self.env).format_author(context.req, user_),
+                                format_datetime(time_, tzinfo=context.req.tz))
+            return unicode(_str)
+
+        raise TracError("Internal error")
+
+
 
 class GitRepository(Repository):
     """
