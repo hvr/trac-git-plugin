@@ -87,46 +87,44 @@ class GitConnector(Component):
                 self.log.error("GIT version %s installed not compatible (need >= %s)" %
                                (self._version['v_str'], self._version['v_min_str']))
 
-    def _format_sha_link(self, formatter, ns, sha, label, context=None):
+    #######################
+    # IWikiSyntaxProvider
+
+    def _format_sha_link(self, formatter, sha, label):
         # FIXME: this function needs serious rethinking...
 
         reponame = ''
-        if context is None:
-            context = formatter.context
-        if formatter is None:
-            formatter = context # hack
+
+        context = formatter.context
         while context:
             if context.resource.realm in ('source', 'changeset'):
                 reponame = context.resource.parent.id
                 break
             context = context.parent
-        repos = self.env.get_repository(reponame)
-        if repos:
-            try:
-                changeset = repos.get_changeset(sha)
-                return tag.a(label, class_="changeset",
-                             title=shorten_line(changeset.message),
-                             href=formatter.href.changeset(sha, reponame))
-            except Exception, e:
-                errmsg = to_unicode(e)
-        else:
-            errmsg = "Repository '%s' not found" % reponame
+
+        try:
+            repos = self.env.get_repository(reponame)
+
+            if not repos:
+                raise Exception("Repository '%s' not found" % reponame)
+
+            sha = repos.normalize_rev(sha) # in case it was abbreviated
+            changeset = repos.get_changeset(sha)
+            return tag.a(label, class_="changeset",
+                         title=shorten_line(changeset.message),
+                         href=formatter.href.changeset(sha, repos.reponame))
+        except Exception, e:
+            errmsg = to_unicode(e)
 
         return tag.a(label, class_="missing changeset",
-                     #href=formatter.href.changeset(sha, reponame),
                      title=to_unicode(errmsg), rel="nofollow")
 
-
-    #######################
-    # IWikiSyntaxProvider
-
     def get_wiki_syntax(self):
-        yield (r'(?:\b|!)[0-9a-fA-F]{40,40}\b',
-               lambda fmt, sha, match:
-               self._format_sha_link(fmt, 'changeset', sha, sha))
+        yield (r'(?:\b|!)r?[0-9a-fA-F]{%d,40}\b' % self._wiki_shortrev_len,
+               lambda fmt, sha, match: self._format_sha_link(fmt, sha.startswith('r') and sha[1:] or sha, sha))
 
     def get_link_resolvers(self):
-        yield ('sha', self._format_sha_link)
+        yield 'sha', lambda fmt, _, sha, label, match=None: self._format_sha_link(fmt, sha, label)
 
     #######################
     # IRepositoryConnector
@@ -140,6 +138,10 @@ class GitConnector(Component):
     _shortrev_len = IntOption('git', 'shortrev_len', 7,
                               "length rev sha sums should be tried to be abbreviated to"
                               " (must be >= 4 and <= 40)")
+
+    _wiki_shortrev_len = IntOption('git', 'wiki_shortrev_len', 40,
+                                   "minimum length of hex-string for which auto-detection as sha id is performed"
+                                   " (must be >= 4 and <= 40)")
 
     _trac_user_rlookup = BoolOption('git', 'trac_user_rlookup', 'false',
                                     "enable reverse mapping of git email addresses to trac user ids")
@@ -161,6 +163,12 @@ class GitConnector(Component):
     def get_repository(self, type, dir, params):
         """GitRepository factory method"""
         assert type == "git"
+
+        if not (4 <= self._shortrev_len <= 40):
+            raise TracError("shortrev_len must be withing [4..40]")
+
+        if not (4 <= self._wiki_shortrev_len <= 40):
+            raise TracError("wiki_shortrev_len must be withing [4..40]")
 
         if not self._version:
             raise TracError("GIT backend not available")
@@ -227,6 +235,7 @@ class CsetPropertyRenderer(Component):
     def render_property(self, name, mode, context, props):
 
         def sha_link(sha):
+            # sha is assumed to be a non-abbreviated 40-chars sha id
             try:
                 reponame = context.resource.parent.id
                 repos = self.env.get_repository(reponame)
