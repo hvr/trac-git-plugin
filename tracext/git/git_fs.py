@@ -385,10 +385,12 @@ class GitNode(Node):
 
             if k == 'tree':
                 pass
+            elif k == 'commit':
+                pass # FIXME: this is a workaround for missing git submodule support in the plugin
             elif k == 'blob':
                 kind = Node.FILE
             else:
-                raise TracError("internal error (got unexpected object kind '%s')" % k)
+                raise TracError("Internal error (got unexpected object kind '%s')" % k)
 
         self.created_path = path
         self.created_rev = rev
