@@ -328,6 +328,9 @@ class GitRepository(Repository):
             raise NoSuchChangeset(rev)
         return normrev
 
+    def display_rev(self, rev):
+        return self.short_rev(rev)
+
     def short_rev(self, rev):
         return self.git.shortrev(self.normalize_rev(rev), min_len=self._shortrev_len)
 
