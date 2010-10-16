@@ -176,8 +176,9 @@ class Storage:
             result['v_min_str'] = ".".join(map(str, GIT_VERSION_MIN_REQUIRED))
             result['v_compatible'] = split_version >= GIT_VERSION_MIN_REQUIRED
             return result
-        except:
-            raise GitError("Could not retrieve GIT version")
+        except Exception, e:
+            raise GitError("Could not retrieve GIT version (tried to execute/parse '%s --version' but got %s)"
+                           % (git_bin, repr(e)))
 
     def __init__(self, git_dir, log, git_bin='git'):
         self.logger = log

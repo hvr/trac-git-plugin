@@ -78,7 +78,7 @@ class GitConnector(Component):
         try:
             self._version = PyGIT.Storage.git_version(git_bin=self._git_bin)
         except PyGIT.GitError, e:
-            self.log.error("GitError: "+e.message)
+            self.log.error("GitError: " + str(e))
 
         if self._version:
             self.log.info("detected GIT version %s" % self._version['v_str'])
