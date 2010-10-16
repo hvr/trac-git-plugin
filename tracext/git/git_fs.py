@@ -59,12 +59,15 @@ def _last_iterable(iterable):
 
 # helper
 def _parse_user_time(s):
-        """parse author/committer attribute lines and return
-        (user,timestamp)"""
-        (user,time,tz_str) = s.rsplit(None, 2)
+        """
+	parse author/committer attribute lines and return
+        (user,timestamp)
+	"""
+
+        user, time, tz_str = s.rsplit(None, 2)
         tz = FixedOffset((int(tz_str)*6)/10, tz_str)
         time = datetime.fromtimestamp(float(time), tz)
-        return (user,time)
+        return user, time
 
 class GitConnector(Component):
         implements(IRepositoryConnector, IWikiSyntaxProvider, IPropertyRenderer)
@@ -164,6 +167,16 @@ class GitConnector(Component):
                                   "length rev sha sums should be tried to be abbreviated to"
                                   " (must be >= 4 and <= 40)")
 
+	_trac_user_rlookup = BoolOption('git', 'trac_user_rlookup', 'false',
+					"enable reverse mapping of git email addresses to trac user ids")
+
+	_use_committer_id = BoolOption('git', 'use_committer_id', 'true',
+				       "use git-committer id instead of git-author id as changeset owner")
+
+	_use_committer_time = BoolOption('git', 'use_committer_time', 'true',
+					 "use git-committer-author timestamp instead of git-author timestamp"
+					 " as changeset timestamp")
+
         _git_bin = PathOption('git', 'git_bin', '/usr/bin/git', "path to git executable (relative to trac project folder!)")
 
 
@@ -180,10 +193,40 @@ class GitConnector(Component):
                         raise TracError("GIT version %s installed not compatible (need >= %s)" %
                                         (self._version['v_str'], self._version['v_min_str']))
 
+		if self._trac_user_rlookup:
+			def rlookup_uid(email):
+				"""
+				reverse map 'real name <user@domain.tld>' addresses to trac user ids
+
+				returns None if lookup failed
+				"""
+
+				try:
+					_, email = email.rsplit('<', 1)
+					email, _ = email.split('>', 1)
+					email = email.lower()
+				except Exception:
+					return None
+
+				for _uid, _name, _email in self.env.get_known_users():
+					try:
+						if email == _email.lower():
+							return _uid
+					except Exception:
+						continue
+
+		else:
+			def rlookup_uid(_):
+				return None
+
                 repos = GitRepository(dir, params, self.log,
                                       persistent_cache=self._persistent_cache,
                                       git_bin=self._git_bin,
-                                      shortrev_len=self._shortrev_len)
+                                      shortrev_len=self._shortrev_len,
+				      rlookup_uid=rlookup_uid,
+				      use_committer_id=self._use_committer_id,
+				      use_committer_time=self._use_committer_time,
+				      )
 
                 if self._cached_repository:
                         repos = CachedRepository2(self.env, repos, self.log)
@@ -194,12 +237,26 @@ class GitConnector(Component):
                 return repos
 
 class GitRepository(Repository):
-        def __init__(self, path, params, log, persistent_cache=False,
-                        git_bin='git', shortrev_len=7):
+	"""
+	Git repository
+	"""
+
+        def __init__(self, path, params, log,
+		     persistent_cache=False,
+		     git_bin='git',
+		     shortrev_len=7,
+		     rlookup_uid=lambda _: None,
+		     use_committer_id=False,
+		     use_committer_time=False,
+		     ):
+
                 self.logger = log
                 self.gitrepo = path
                 self.params = params
                 self._shortrev_len = max(4, min(shortrev_len, 40))
+		self.rlookup_uid = rlookup_uid
+		self._use_committer_time = use_committer_time
+		self._use_committer_id = use_committer_id
 
                 self.git = PyGIT.StorageFactory(path, log, not persistent_cache,
                                                 git_bin=git_bin).getInstance()
@@ -404,6 +461,11 @@ class GitNode(Node):
                 return ts
 
 class GitChangeset(Changeset):
+	"""
+	A Git changeset in the Git repository.
+
+	Corresponds to a Git commit blob.
+	"""
 
         action_map = { # see also git-diff-tree(1) --diff-filter
                 'A': Changeset.ADD,
@@ -417,7 +479,7 @@ class GitChangeset(Changeset):
         def __init__(self, repos, sha):
                 self.repos = repos
                 try:
-                        (msg, props) = repos.git.read_commit(sha)
+                        msg, props = repos.git.read_commit(sha)
                 except PyGIT.GitErrorSha:
                         raise NoSuchChangeset(sha)
                 self.props = props
@@ -427,10 +489,21 @@ class GitChangeset(Changeset):
                 if _children:
                         props['children'] = _children
 
-                # use 1st committer as changeset owner/timestamp
-                (user_, time_) = _parse_user_time(props['committer'][0])
+                # use 1st author/committer as changeset owner/timestamp
+		if repos._use_committer_time:
+			_, time_ = _parse_user_time(props['committer'][0])
+		else:
+			_, time_ = _parse_user_time(props['author'][0])
 
-                Changeset.__init__(self, repos, sha, msg, user_, time_)
+		if repos._use_committer_id:
+			user_, _ = _parse_user_time(props['committer'][0])
+		else:
+			user_, _ = _parse_user_time(props['author'][0])
+
+		# try to resolve email address to trac uid
+		user_ = repos.rlookup_uid(user_) or user_
+
+                Changeset.__init__(self, repos, rev=sha, message=msg, author=user_, date=time_)
 
         def get_properties(self):
                 properties = {}
@@ -442,9 +515,8 @@ class GitChangeset(Changeset):
                         properties['git-committer'] = \
                             _parse_user_time(self.props['committer'][0])
                 if 'author' in self.props:
-                        git_author = _parse_user_time(self.props['author'][0])
-                        if not properties.get('git-committer') == git_author:
-                                properties['git-author'] = git_author
+                        properties['git-author'] = \
+                            _parse_user_time(self.props['author'][0])
 
                 return properties
 
