@@ -57,6 +57,18 @@ def _last_iterable(iterable):
         v = nextv
     yield True, v
 
+def intersperse(sep, iterable):
+    """
+    The 'intersperse' generator takes an element and an iterable and
+    intersperses that element between the elements of the iterable.
+
+    inspired by Haskell's Data.List.intersperse
+    """
+
+    for i, item in enumerate(iterable):
+        if i: yield sep
+        yield item
+
 # helper
 def _parse_user_time(s):
     """
@@ -228,19 +240,23 @@ class CsetPropertyRenderer(Component):
         # default renderer has priority 1
         return (name in ('Parents',
                          'Children',
+                         'Branches',
                          'git-committer',
                          'git-author',
                          ) and mode == 'revprop') and 4 or 0
 
     def render_property(self, name, mode, context, props):
 
-        def sha_link(sha):
+        def sha_link(sha, label=None):
             # sha is assumed to be a non-abbreviated 40-chars sha id
             try:
                 reponame = context.resource.parent.id
                 repos = self.env.get_repository(reponame)
                 cset = repos.get_changeset(sha)
-                return tag.a(repos.display_rev(sha), class_="changeset",
+                if label is None:
+                    label = repos.display_rev(sha)
+
+                return tag.a(label, class_="changeset",
                              title=shorten_line(cset.message),
                              href=context.href.changeset(sha, repos.reponame))
 
@@ -249,7 +265,13 @@ class CsetPropertyRenderer(Component):
                 return tag.a(sha, class_="missing changeset",
                              title=to_unicode(errmsg), rel="nofollow")
 
-        if name in ('Parents', 'Children'):
+        if name == 'Branches':
+            branches = props[name]
+
+            # simple non-merge commit
+            return tag(*intersperse(', ', (sha_link(rev, label) for label, rev in branches)))
+
+        elif name in ('Parents', 'Children'):
             revs = props[name] # list of commit ids
 
             if name == 'Parents' and len(revs) > 1:
@@ -257,16 +279,16 @@ class CsetPropertyRenderer(Component):
                 current_sha = context.resource.id
                 reponame = context.resource.parent.id
 
-                parent_links = [(sha_link(rev),
-                                 ' (',
-                                 tag.a('diff',
-                                       title="Diff against this parent (show the changes merged from the other parents)",
-                                       href=context.href.changeset(current_sha, reponame, old=rev)),
-                                 ')')
-                                for rev in revs]
+                parent_links = intersperse(', ', \
+                    ((sha_link(rev),
+                      ' (',
+                      tag.a('diff',
+                            title="Diff against this parent (show the changes merged from the other parents)",
+                            href=context.href.changeset(current_sha, reponame, old=rev)),
+                      ')')
+                     for rev in revs))
 
-                return tag([(parent, ', ') for parent in parent_links[:-1]],
-                           parent_links[-1],
+                return tag(list(parent_links),
                            tag.br(),
                            tag.span(tag("Note: this is a ", tag.strong('merge'), " changeset, "
                                         "the changes displayed below correspond "
@@ -278,10 +300,9 @@ class CsetPropertyRenderer(Component):
                                     class_='hint'))
 
             # simple non-merge commit
-            return tag([tag(sha_link(rev), ', ') for rev in revs[:-1]],
-                       sha_link(revs[-1]))
+            return tag(*intersperse(', ', map(sha_link, revs)))
 
-        if name in ('git-committer', 'git-author'):
+        elif name in ('git-committer', 'git-author'):
             user_, time_ = props[name]
             _str = "%s (%s)" % (Chrome(self.env).format_author(context.req, user_),
                                 format_datetime(time_, tzinfo=context.req.tz))
@@ -520,6 +541,7 @@ class GitNode(Node):
 
         return ts
 
+
 class GitChangeset(Changeset):
     """
     A Git changeset in the Git repository.
@@ -567,16 +589,24 @@ class GitChangeset(Changeset):
 
     def get_properties(self):
         properties = {}
+
         if 'parent' in self.props:
             properties['Parents'] = self.props['parent']
+
         if 'children' in self.props:
             properties['Children'] = self.props['children']
+
         if 'committer' in self.props:
             properties['git-committer'] = \
-                            _parse_user_time(self.props['committer'][0])
+                    _parse_user_time(self.props['committer'][0])
+
         if 'author' in self.props:
             properties['git-author'] = \
-                            _parse_user_time(self.props['author'][0])
+                    _parse_user_time(self.props['author'][0])
+
+        branches = list(self.repos.git.get_branch_contains(self.rev, resolve=True))
+        if branches:
+            properties['Branches'] = branches
 
         return properties
 
