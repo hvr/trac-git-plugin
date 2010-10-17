@@ -14,6 +14,8 @@
 
 from __future__ import with_statement
 
+from future27 import namedtuple
+
 import os, re, sys, time, weakref
 from collections import deque
 from functools import partial
@@ -149,48 +151,6 @@ class StorageFactory(object):
                           % (("","weak ")[is_weak], id(self.__inst), self.__repo))
         return self.__inst
 
-# generated with Python 2.6's collections.namedtuple -- we can't depend on 2.6 yet...
-class RevCache(tuple):
-    'RevCache(youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict)'
-
-    __slots__ = ()
-    _fields = ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict')
-
-    def __new__(cls, youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict):
-        return tuple.__new__(cls, (youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict))
-
-    @classmethod
-    def _make(cls, iterable, new=tuple.__new__, len=len):
-        'Make a new RevCache object from a sequence or iterable'
-        result = new(cls, iterable)
-        if len(result) != 6:
-            raise TypeError('Expected 6 arguments, got %d' % len(result))
-        return result
-
-    def __repr__(self):
-        return 'RevCache(youngest_rev=%r, oldest_rev=%r, rev_dict=%r, tag_set=%r, srev_dict=%r, branch_dict=%r)' % self
-
-    def _asdict(t):
-        'Return a new dict which maps field names to their values'
-        return {'youngest_rev': t[0], 'oldest_rev': t[1], 'rev_dict': t[2], 'tag_set': t[3], 'srev_dict': t[4], 'branch_dict': t[5]}
-
-    def _replace(self, **kwds):
-        'Return a new RevCache object replacing specified fields with new values'
-        result = self._make(map(kwds.pop, ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict'), self))
-        if kwds:
-            raise ValueError('Got unexpected field names: %r' % kwds.keys())
-        return result
-
-    def __getnewargs__(self):
-        return tuple(self)
-
-    youngest_rev = property(itemgetter(0))
-    oldest_rev = property(itemgetter(1))
-    rev_dict = property(itemgetter(2))
-    tag_set = property(itemgetter(3))
-    srev_dict = property(itemgetter(4))
-    branch_dict = property(itemgetter(5))
-
 
 class Storage(object):
     """
@@ -198,6 +158,8 @@ class Storage(object):
     """
 
     __SREV_MIN = 4 # minimum short-rev length
+
+    RevCache = namedtuple('RevCache', 'youngest_rev oldest_rev rev_dict tag_set srev_dict branch_dict')
 
     @staticmethod
     def __rev_key(rev):
@@ -329,7 +291,7 @@ class Storage(object):
 
         may rebuild cache on the fly if required
 
-        returns RevCache tupel
+        returns RevCache tuple
         """
 
         with self.__rev_cache_lock:
@@ -423,7 +385,7 @@ class Storage(object):
                 new_sdb = tmp
 
                 # atomically update self.__rev_cache
-                self.__rev_cache = RevCache(youngest, oldest, new_db, new_tags, new_sdb, new_branches)
+                self.__rev_cache = Storage.RevCache(youngest, oldest, new_db, new_tags, new_sdb, new_branches)
                 ts1 = time.time()
                 self.logger.debug("rebuilt commit tree db for %d with %d entries (took %.1f ms)"
                                   % (id(self), len(new_db), 1000*(ts1-ts0)))
@@ -433,7 +395,7 @@ class Storage(object):
             return self.__rev_cache
         # with self.__rev_cache_lock
 
-    # see RevCache namedtupel
+    # see RevCache namedtuple
     rev_cache = property(get_rev_cache)
 
     def _get_branches(self):
