@@ -225,9 +225,9 @@ class GitConnector(Component):
 
         if self._cached_repository:
             repos = CachedRepository2(self.env, repos, self.log)
-            self.log.info("enabled CachedRepository for '%s'" % dir)
+            self.log.debug("enabled CachedRepository for '%s'" % dir)
         else:
-            self.log.info("disabled CachedRepository for '%s'" % dir)
+            self.log.debug("disabled CachedRepository for '%s'" % dir)
 
         return repos
 
