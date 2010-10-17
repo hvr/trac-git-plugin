@@ -163,6 +163,9 @@ class GitConnector(Component):
                                      "use git-committer-author timestamp instead of git-author timestamp"
                                      " as changeset timestamp")
 
+    _git_fs_encoding = Option('git', 'git_fs_encoding', 'utf-8',
+                              "define charset encoding of paths within git repository")
+
     _git_bin = PathOption('git', 'git_bin', '/usr/bin/git',
                           "path to git executable (relative to trac project folder!)")
 
@@ -215,6 +218,7 @@ class GitConnector(Component):
         repos = GitRepository(dir, params, self.log,
                               persistent_cache=self._persistent_cache,
                               git_bin=self._git_bin,
+                              git_fs_encoding=self._git_fs_encoding,
                               shortrev_len=self._shortrev_len,
                               rlookup_uid=rlookup_uid,
                               use_committer_id=self._use_committer_id,
@@ -317,6 +321,7 @@ class GitRepository(Repository):
     def __init__(self, path, params, log,
                  persistent_cache=False,
                  git_bin='git',
+                 git_fs_encoding='utf-8',
                  shortrev_len=7,
                  rlookup_uid=lambda _: None,
                  use_committer_id=False,
@@ -331,7 +336,9 @@ class GitRepository(Repository):
         self._use_committer_time = use_committer_time
         self._use_committer_id = use_committer_id
 
-        self.git = PyGIT.StorageFactory(path, log, not persistent_cache, git_bin=git_bin).getInstance()
+        self.git = PyGIT.StorageFactory(path, log, not persistent_cache,
+                                        git_bin=git_bin,
+                                        git_fs_encoding=git_fs_encoding).getInstance()
 
         Repository.__init__(self, "git:"+path, self.params, log)
 
@@ -632,7 +639,7 @@ class GitChangeset(Changeset):
 
                 paths_seen.add(path)
 
-                yield (to_unicode(path), kind, action, to_unicode(p_path), p_rev)
+                yield path, kind, action, p_path, p_rev
 
 
     def get_branches(self):
