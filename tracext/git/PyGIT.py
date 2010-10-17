@@ -1,6 +1,6 @@
 # -*- coding: iso-8859-1 -*-
 #
-# Copyright (C) 2006,2008 Herbert Valerio Riedel <hvr@gnu.org>
+# Copyright (C) 2006-2010 Herbert Valerio Riedel <hvr@gnu.org>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -21,7 +21,6 @@ from threading import Lock
 from subprocess import Popen, PIPE
 from operator import itemgetter
 import cStringIO
-import string
 
 __all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
 
@@ -31,7 +30,11 @@ class GitError(Exception):
 class GitErrorSha(GitError):
     pass
 
-class GitCore:
+class GitCore(object):
+    """
+    Low-level wrapper around git executable
+    """
+
     def __init__(self, git_dir=None, git_bin="git"):
         self.__git_bin = git_bin
         self.__git_dir = git_dir
@@ -70,16 +73,23 @@ class GitCore:
     __is_sha_pat = re.compile(r'[0-9A-Fa-f]*$')
 
     @classmethod
-    def is_sha(cls,sha):
-        """returns whether sha is a potential sha id
-        (i.e. proper hexstring between 4 and 40 characters"""
+    def is_sha(cls, sha):
+        """
+        returns whether sha is a potential sha id
+        (i.e. proper hexstring between 4 and 40 characters)
+        """
+
+        # quick test before starting up regexp matcher
         if not (4 <= len(sha) <= 40):
             return False
 
         return bool(cls.__is_sha_pat.match(sha))
 
-# helper class for caching...
 class SizedDict(dict):
+    """
+    Size-bounded dictionary with FIFO replacement strategy
+    """
+
     def __init__(self, max_size=0):
         dict.__init__(self)
         self.__max_size = max_size
@@ -102,11 +112,10 @@ class SizedDict(dict):
 
             return rc
 
-    def setdefault(k,d=None):
-        # TODO
-        raise AttributeError("SizedDict has no setdefault() method")
+    def setdefault(self, *_):
+        raise NotImplemented("SizedDict has no setdefault() method")
 
-class StorageFactory:
+class StorageFactory(object):
     __dict = weakref.WeakValueDictionary()
     __dict_nonweak = dict()
     __dict_lock = Lock()
@@ -146,8 +155,8 @@ class RevCache(tuple):
     __slots__ = ()
     _fields = ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict')
 
-    def __new__(_cls, youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict):
-        return tuple.__new__(_cls, (youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict))
+    def __new__(cls, youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict):
+        return tuple.__new__(cls, (youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict))
 
     @classmethod
     def _make(cls, iterable, new=tuple.__new__, len=len):
@@ -164,9 +173,9 @@ class RevCache(tuple):
         'Return a new dict which maps field names to their values'
         return {'youngest_rev': t[0], 'oldest_rev': t[1], 'rev_dict': t[2], 'tag_set': t[3], 'srev_dict': t[4], 'branch_dict': t[5]}
 
-    def _replace(_self, **kwds):
+    def _replace(self, **kwds):
         'Return a new RevCache object replacing specified fields with new values'
-        result = _self._make(map(kwds.pop, ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict'), _self))
+        result = self._make(map(kwds.pop, ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict'), self))
         if kwds:
             raise ValueError('Got unexpected field names: %r' % kwds.keys())
         return result
@@ -182,7 +191,7 @@ class RevCache(tuple):
     branch_dict = property(itemgetter(5))
 
 
-class Storage:
+class Storage(object):
     """
     High-level wrapper around GitCore with in-memory caching
     """
@@ -199,11 +208,11 @@ class Storage:
 
     @staticmethod
     def git_version(git_bin="git"):
-        GIT_VERSION_MIN_REQUIRED = (1,5,6)
+        GIT_VERSION_MIN_REQUIRED = (1, 5, 6)
         try:
             g = GitCore(git_bin=git_bin)
             [v] = g.version().splitlines()
-            _,_,version = v.strip().split()
+            _, _, version = v.strip().split()
             # 'version' has usually at least 3 numeric version components, e.g.::
             #  1.5.4.2
             #  1.5.4.3.230.g2db511
@@ -226,7 +235,8 @@ class Storage:
             return result
 
         except Exception, e:
-            raise GitError("Could not retrieve GIT version (tried to execute/parse '%s --version' but got %s)"
+            raise GitError("Could not retrieve GIT version"
+                           " (tried to execute/parse '%s --version' but got %s)"
                            % (git_bin, repr(e)))
 
     def __init__(self, git_dir, log, git_bin='git'):
@@ -269,6 +279,7 @@ class Storage:
     # called by Storage.sync()
     def __rev_cache_sync(self, youngest_rev=None):
         "invalidates revision db cache if necessary"
+
         with self.__rev_cache_lock:
             need_update = False
             if self.__rev_cache:
@@ -296,6 +307,7 @@ class Storage:
         with self.__rev_cache_lock:
             if self.__rev_cache is None: # can be cleared by Storage.__rev_cache_sync()
                 self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
+                ts0 = time.time()
 
                 youngest = None
                 oldest = None
@@ -384,7 +396,9 @@ class Storage:
 
                 # atomically update self.__rev_cache
                 self.__rev_cache = RevCache(youngest, oldest, new_db, new_tags, new_sdb, new_branches)
-                self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self), len(new_db)))
+                ts1 = time.time()
+                self.logger.debug("rebuilt commit tree db for %d with %d entries (took %.1f ms)"
+                                  % (id(self), len(new_db), 1000*(ts1-ts0)))
 
             assert all(e is not None for e in self.__rev_cache) or not any(self.__rev_cache)
 
@@ -397,7 +411,7 @@ class Storage:
     def _get_branches(self):
         "returns list of (local) branches, with active (= HEAD) one being the first item"
 
-        result=[]
+        result = []
         for e in self.repo.branch("-v", "--no-abbrev").splitlines():
             bname, bsha = e[1:].strip().split()[:2]
             if e.startswith('*'):
@@ -443,7 +457,7 @@ class Storage:
         db = self.get_commits()
 
         if sha not in db:
-            raise GitErrorSha
+            raise GitErrorSha()
 
         if rel_pos == 0:
             return sha
@@ -453,7 +467,7 @@ class Storage:
         if lin_rev < 1 or lin_rev > len(db):
             return None
 
-        for k,v in db.iteritems():
+        for k, v in db.iteritems():
             if v[2] == lin_rev:
                 return k
 
@@ -498,7 +512,7 @@ class Storage:
             return rc
 
         if rc in _rev_cache.tag_set:
-            sha=self.repo.cat_file("tag", rc).split(None, 2)[:2]
+            sha = self.repo.cat_file("tag", rc).split(None, 2)[:2]
             if sha[0] != 'object':
                 self.logger.debug("unexpected result from 'git-cat-file tag %s'" % rc)
                 return None
@@ -573,15 +587,16 @@ class Storage:
 
         def split_ls_tree_line(l):
             "split according to '<mode> <type> <sha> <size>\t<fname>'"
-            meta,fname = l.split('\t')
-            _mode,_type,_sha,_size = meta.split()
+
+            meta, fname = l.split('\t')
+            _mode, _type, _sha, _size = meta.split()
 
             if _size == '-':
                 _size = None
             else:
                 _size = int(_size)
 
-            return _mode,_type,_sha,_size,fname
+            return _mode, _type, _sha, _size, fname
 
         return [ split_ls_tree_line(e) for e in tree if e ]
 
@@ -614,8 +629,8 @@ class Storage:
             line = lines.pop(0)
             props = {}
             while line:
-                (key,value) = line.split(None, 1)
-                props.setdefault(key,[]).append(value.strip())
+                key, value = line.split(None, 1)
+                props.setdefault(key, []).append(value.strip())
                 line = lines.pop(0)
 
             result = ("\n".join(lines), props)
@@ -785,8 +800,8 @@ class Storage:
 ############################################################################
 ############################################################################
 
-if __name__ == '__main__':
-    import sys, logging, timeit
+def main():
+    import logging, timeit
 
     assert not GitCore.is_sha("123")
     assert GitCore.is_sha("1a3f")
@@ -818,13 +833,12 @@ if __name__ == '__main__':
 
     print "statm =", proc_statm()
     __data_size = proc_statm()[5]
-    __data_size_last = __data_size
+    __data_size_last = [__data_size]
 
     def print_data_usage():
-        global __data_size_last
         __tmp = proc_statm()[5]
-        print "DATA: %6d %+6d" % (__tmp - __data_size, __tmp - __data_size_last)
-        __data_size_last = __tmp
+        print "DATA: %6d %+6d" % (__tmp - __data_size, __tmp - __data_size_last[0])
+        __data_size_last[0] = __tmp
 
     print_data_usage()
 
@@ -857,17 +871,17 @@ if __name__ == '__main__':
     print "--------------"
 
     p = g.head()
-    for i in range(-5,5):
+    for i in range(-5, 5):
         print i, g.history_relative_rev(p, i)
 
     # check for loops
     def check4loops(head):
         print "check4loops", head
         seen = set([head])
-        for sha in g.children_recursive(head):
-            if sha in seen:
-                print "dupe detected :-/", sha, len(seen)
-            seen.add(sha)
+        for _sha in g.children_recursive(head):
+            if _sha in seen:
+                print "dupe detected :-/", _sha, len(seen)
+            seen.add(_sha)
         return seen
 
     print len(check4loops(g.parents(g.head())[0]))
@@ -885,10 +899,10 @@ if __name__ == '__main__':
             assert i.startswith(s)
             assert g.fullrev(s) == i
 
-    iters = 1
-    print "timing %d*shortrev_test()..." % len(revs)
-    t = timeit.Timer("shortrev_test()", "from __main__ import shortrev_test")
-    print "%.2f usec/rev" % (1000000 * t.timeit(number=iters)/len(revs))
+    # iters = 1
+    # print "timing %d*shortrev_test()..." % len(revs)
+    # t = timeit.Timer("shortrev_test()", "from __main__ import shortrev_test")
+    # print "%.2f usec/rev" % (1000000 * t.timeit(number=iters)/len(revs))
 
     #print len(check4loops(g.oldest_rev()))
     #print len(list(g.children_recursive(g.oldest_rev())))
@@ -900,19 +914,23 @@ if __name__ == '__main__':
     if 1:
         print "--------------"
         rev = g.head()
-        for mode,type,sha,_size,name in g.ls_tree(rev):
+        for mode, _type, sha, _size, name in g.ls_tree(rev):
             [last_rev] = g.history(rev, name, limit=1)
-            s = g.get_obj_size(sha) if type == "blob" else 0
+            s = g.get_obj_size(sha) if _type == "blob" else 0
             msg = g.read_commit(last_rev)
 
-            print "%s %s %10d [%s]" % (type, last_rev, s, name)
+            print "%s %s %10d [%s]" % (_type, last_rev, s, name)
 
     print "allocating 2nd instance"
     print_data_usage()
     g2 = Storage(sys.argv[1], logging)
     g2.head()
     print_data_usage()
+
     print "allocating 3rd instance"
     g3 = Storage(sys.argv[1], logging)
     g3.head()
     print_data_usage()
+
+if __name__ == '__main__':
+    main()
