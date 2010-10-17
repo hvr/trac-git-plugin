@@ -619,7 +619,7 @@ class Storage(object):
         def split_ls_tree_line(l):
             "split according to '<mode> <type> <sha> <size>\t<fname>'"
 
-            meta, fname = l.split('\t')
+            meta, fname = l.split('\t', 1)
             _mode, _type, _sha, _size = meta.split()
 
             if _size == '-':
