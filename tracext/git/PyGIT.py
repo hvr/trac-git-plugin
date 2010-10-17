@@ -138,7 +138,12 @@ class StorageFactory:
                           % (("","weak ")[is_weak], id(self.__inst), self.__repo))
         return self.__inst
 
+
 class Storage:
+    """
+    High-level wrapper around GitCore with in-memory caching
+    """
+
     __SREV_MIN = 4 # minimum short-rev length
 
     @staticmethod
@@ -236,16 +241,22 @@ class Storage:
             return need_update
 
     def get_rev_cache(self):
+        """
+        Retrieve revision cache
+
+        may rebuild cache on the fly if required
+
+        returns tuple(youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict, branch_dict)
+        """
+
         with self.__rev_cache_lock:
             if self.__rev_cache is None: # can be cleared by Storage.__rev_cache_sync()
                 self.logger.debug("triggered rebuild of commit tree db for %d" % id(self))
-                new_db = {}
-                new_sdb = {}
-                new_tags = set([])
+
                 youngest = None
                 oldest = None
-                for revs in self.repo.rev_parse("--tags").splitlines():
-                    new_tags.add(revs.strip())
+                new_db = {} # db
+                new_sdb = {} # short_rev db
 
                 # helper for reusing strings
                 __rev_seen = {}
@@ -253,71 +264,73 @@ class Storage:
                     rev = str(rev)
                     return __rev_seen.setdefault(rev, rev)
 
-                rev = ord_rev = 0
-                for revs in self.repo.rev_list("--parents", "--all").splitlines():
-                    revs = revs.strip().split()
+                new_tags = set(__rev_reuse(rev.strip()) for rev in self.repo.rev_parse("--tags").splitlines())
 
-                    revs = map(__rev_reuse, revs)
+                new_branches = [(k, __rev_reuse(v)) for k, v in self._get_branches()]
+                head_revs = set(v for _, v in new_branches)
+
+                rev = ord_rev = 0
+                for ord_rev, revs in enumerate(self.repo.rev_list("--parents",
+                                                                  "--topo-order",
+                                                                  "--all").splitlines()):
+                    revs = map(__rev_reuse, revs.strip().split())
 
                     rev = revs[0]
+
+                    # first rev seen is assumed to be the youngest one
+                    if not ord_rev:
+                        youngest = rev
 
                     # shortrev "hash" map
                     srev_key = self.__rev_key(rev)
                     new_sdb.setdefault(srev_key, []).append(rev)
 
+                    # parents
                     parents = tuple(revs[1:])
 
-                    ord_rev += 1
-
-                    # first rev seen is assumed to be the youngest one (and has ord_rev=1)
-                    if not youngest:
-                        youngest = rev
-
-                    # new_db[rev] = (children(rev), parents(rev), ordinal_id(rev))
-                    if new_db.has_key(rev):
-                        _children,_parents,_ord_rev = new_db[rev]
+                    # new_db[rev] = (children(rev), parents(rev), ordinal_id(rev), rheads(rev))
+                    if rev in new_db:
+                        # (incomplete) entry was already created by children
+                        _children, _parents, _ord_rev, _rheads = new_db[rev]
                         assert _children
                         assert not _parents
                         assert _ord_rev == 0
-                    else:
+
+                        if rev in head_revs and rev not in _rheads:
+                            _rheads.append(rev)
+
+                    else: # new entry
                         _children = []
+                        _rheads = [rev] if rev in head_revs else []
 
-                    # create/update entry
-                    new_db[rev] = _children, parents, ord_rev
+                    # create/update entry -- transform lists into tuples since entry will be final
+                    new_db[rev] = tuple(_children), tuple(parents), ord_rev + 1, tuple(_rheads)
 
-                    # update all parents(rev)'s children
+                    # update parents(rev)s
                     for parent in parents:
                         # by default, a dummy ordinal_id is used for the mean-time
-                        _children, _parents, _ord_rev = new_db.setdefault(parent, ([], [], 0))
+                        _children, _parents, _ord_rev, _rheads2 = new_db.setdefault(parent, ([], [], 0, []))
+
+                        # update parent(rev)'s children
                         if rev not in _children:
                             _children.append(rev)
+
+                        # update parent(rev)'s rheads
+                        for rev in _rheads:
+                            if rev not in _rheads2:
+                                _rheads2.append(rev)
 
                 # last rev seen is assumed to be the oldest one (with highest ord_rev)
                 oldest = rev
 
                 __rev_seen = None
 
-                assert len(new_db) == ord_rev
-
-                # convert children lists to tuples
-                tmp = {}
-                try:
-                    while True:
-                        k,v = new_db.popitem()
-                        assert v[2] > 0
-                        tmp[k] = tuple(v[0]),v[1],v[2]
-                except KeyError:
-                    pass
-
-                assert len(new_db) == 0
-                new_db = tmp
-
                 # convert sdb either to dict or array depending on size
                 tmp = [()]*(max(new_sdb.keys())+1) if len(new_sdb) > 5000 else {}
 
                 try:
                     while True:
-                        k,v = new_sdb.popitem()
+                        k, v = new_sdb.popitem()
                         tmp[k] = tuple(v)
                 except KeyError:
                     pass
@@ -326,16 +339,31 @@ class Storage:
                 new_sdb = tmp
 
                 # atomically update self.__rev_cache
-                self.__rev_cache = youngest, oldest, new_db, new_tags, new_sdb
-                self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self),len(new_db)))
+                self.__rev_cache = youngest, oldest, new_db, new_tags, new_sdb, new_branches
+                self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self), len(new_db)))
 
             assert all(e is not None for e in self.__rev_cache) or not any(self.__rev_cache)
 
             return self.__rev_cache
         # with self.__rev_cache_lock
 
-    # tuple: youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict
+    # tuple: youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict, branch_dict
     rev_cache = property(get_rev_cache)
+
+    def _get_branches(self):
+        "returns list of (local) branches, with active (= HEAD) one being the first item"
+        result=[]
+        for e in self.repo.branch("-v", "--no-abbrev").splitlines():
+            (bname,bsha)=e[1:].strip().split()[:2]
+            if e.startswith('*'):
+                result.insert(0,(bname,bsha))
+            else:
+                result.append((bname,bsha))
+        return result
+
+    def get_branches(self):
+        "returns list of (local) branches, with active (= HEAD) one being the first item"
+        return self.rev_cache[5]
 
     def get_commits(self):
         return self.rev_cache[2]
@@ -467,17 +495,6 @@ class Storage:
 
         return None
 
-    def get_branches(self):
-        "returns list of (local) branches, with active (= HEAD) one being the first item"
-        result=[]
-        for e in self.repo.branch("-v", "--no-abbrev").splitlines():
-            (bname,bsha)=e[1:].strip().split()[:2]
-            if e.startswith('*'):
-                result.insert(0,(bname,bsha))
-            else:
-                result.append((bname,bsha))
-        return result
-
     def get_tags(self):
         return [e.strip() for e in self.repo.tag("-l").splitlines()]
 
@@ -594,7 +611,7 @@ class Storage:
         return self.get_commits().iterkeys()
 
     def sync(self):
-        rev = self.repo.rev_list("--max-count=1", "--all").strip()
+        rev = self.repo.rev_list("--max-count=1", "--topo-order", "--all").strip()
         return self.__rev_cache_sync(rev)
 
     def last_change(self, sha, path):
