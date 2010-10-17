@@ -537,11 +537,11 @@ class GitChangeset(Changeset):
         } # TODO: U, X, B
 
     def __init__(self, repos, sha):
-        self.repos = repos
         try:
             msg, props = repos.git.read_commit(sha)
         except PyGIT.GitErrorSha:
             raise NoSuchChangeset(sha)
+
         self.props = props
 
         assert 'children' not in props
@@ -606,3 +606,10 @@ class GitChangeset(Changeset):
                 paths_seen.add(path)
 
                 yield (to_unicode(path), kind, action, to_unicode(p_path), p_rev)
+
+
+    def get_branches(self):
+        _rev = self.rev
+
+        return [ (k, v == _rev)
+                 for k, v in self.repos.git.get_branch_contains(_rev, resolve=True) ]

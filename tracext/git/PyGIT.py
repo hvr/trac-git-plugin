@@ -420,6 +420,25 @@ class Storage:
     def youngest_rev(self):
         return self.rev_cache.youngest_rev
 
+    def get_branch_contains(self, sha, resolve=False):
+        """
+        return list of reachable head sha ids or (names, sha) pairs if resolve is true
+
+        see also get_branches()
+        """
+
+        _rev_cache = self.rev_cache
+
+        try:
+            rheads = _rev_cache.rev_dict[sha][3]
+        except KeyError:
+            return []
+
+        if resolve:
+            return [ (k, v) for k, v in _rev_cache.branch_dict if v in rheads ]
+
+        return rheads
+
     def history_relative_rev(self, sha, rel_pos):
         db = self.get_commits()
 
