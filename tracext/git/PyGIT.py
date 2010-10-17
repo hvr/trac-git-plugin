@@ -19,6 +19,7 @@ from collections import deque
 from functools import partial
 from threading import Lock
 from subprocess import Popen, PIPE
+from operator import itemgetter
 import cStringIO
 import string
 
@@ -138,6 +139,48 @@ class StorageFactory:
                           % (("","weak ")[is_weak], id(self.__inst), self.__repo))
         return self.__inst
 
+# generated with Python 2.6's collections.namedtuple -- we can't depend on 2.6 yet...
+class RevCache(tuple):
+    'RevCache(youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict)'
+
+    __slots__ = ()
+    _fields = ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict')
+
+    def __new__(_cls, youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict):
+        return tuple.__new__(_cls, (youngest_rev, oldest_rev, rev_dict, tag_set, srev_dict, branch_dict))
+
+    @classmethod
+    def _make(cls, iterable, new=tuple.__new__, len=len):
+        'Make a new RevCache object from a sequence or iterable'
+        result = new(cls, iterable)
+        if len(result) != 6:
+            raise TypeError('Expected 6 arguments, got %d' % len(result))
+        return result
+
+    def __repr__(self):
+        return 'RevCache(youngest_rev=%r, oldest_rev=%r, rev_dict=%r, tag_set=%r, srev_dict=%r, branch_dict=%r)' % self
+
+    def _asdict(t):
+        'Return a new dict which maps field names to their values'
+        return {'youngest_rev': t[0], 'oldest_rev': t[1], 'rev_dict': t[2], 'tag_set': t[3], 'srev_dict': t[4], 'branch_dict': t[5]}
+
+    def _replace(_self, **kwds):
+        'Return a new RevCache object replacing specified fields with new values'
+        result = _self._make(map(kwds.pop, ('youngest_rev', 'oldest_rev', 'rev_dict', 'tag_set', 'srev_dict', 'branch_dict'), _self))
+        if kwds:
+            raise ValueError('Got unexpected field names: %r' % kwds.keys())
+        return result
+
+    def __getnewargs__(self):
+        return tuple(self)
+
+    youngest_rev = property(itemgetter(0))
+    oldest_rev = property(itemgetter(1))
+    rev_dict = property(itemgetter(2))
+    tag_set = property(itemgetter(3))
+    srev_dict = property(itemgetter(4))
+    branch_dict = property(itemgetter(5))
+
 
 class Storage:
     """
@@ -181,6 +224,7 @@ class Storage:
             result['v_min_str'] = ".".join(map(str, GIT_VERSION_MIN_REQUIRED))
             result['v_compatible'] = split_version >= GIT_VERSION_MIN_REQUIRED
             return result
+
         except Exception, e:
             raise GitError("Could not retrieve GIT version (tried to execute/parse '%s --version' but got %s)"
                            % (git_bin, repr(e)))
@@ -228,7 +272,7 @@ class Storage:
         with self.__rev_cache_lock:
             need_update = False
             if self.__rev_cache:
-                last_youngest_rev = self.__rev_cache[0]
+                last_youngest_rev = self.__rev_cache.youngest_rev
                 if last_youngest_rev != youngest_rev:
                     self.logger.debug("invalidated caches (%s != %s)" % (last_youngest_rev, youngest_rev))
                     need_update = True
@@ -246,7 +290,7 @@ class Storage:
 
         may rebuild cache on the fly if required
 
-        returns tuple(youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict, branch_dict)
+        returns RevCache tupel
         """
 
         with self.__rev_cache_lock:
@@ -339,7 +383,7 @@ class Storage:
                 new_sdb = tmp
 
                 # atomically update self.__rev_cache
-                self.__rev_cache = youngest, oldest, new_db, new_tags, new_sdb, new_branches
+                self.__rev_cache = RevCache(youngest, oldest, new_db, new_tags, new_sdb, new_branches)
                 self.logger.debug("rebuilt commit tree db for %d with %d entries" % (id(self), len(new_db)))
 
             assert all(e is not None for e in self.__rev_cache) or not any(self.__rev_cache)
@@ -347,32 +391,34 @@ class Storage:
             return self.__rev_cache
         # with self.__rev_cache_lock
 
-    # tuple: youngest_rev, oldest_rev, rev_dict, tag_dict, short_rev_dict, branch_dict
+    # see RevCache namedtupel
     rev_cache = property(get_rev_cache)
 
     def _get_branches(self):
         "returns list of (local) branches, with active (= HEAD) one being the first item"
+
         result=[]
         for e in self.repo.branch("-v", "--no-abbrev").splitlines():
-            (bname,bsha)=e[1:].strip().split()[:2]
+            bname, bsha = e[1:].strip().split()[:2]
             if e.startswith('*'):
-                result.insert(0,(bname,bsha))
+                result.insert(0, (bname, bsha))
             else:
-                result.append((bname,bsha))
+                result.append((bname, bsha))
+
         return result
 
     def get_branches(self):
         "returns list of (local) branches, with active (= HEAD) one being the first item"
-        return self.rev_cache[5]
+        return self.rev_cache.branch_dict
 
     def get_commits(self):
-        return self.rev_cache[2]
+        return self.rev_cache.rev_dict
 
     def oldest_rev(self):
-        return self.rev_cache[1]
+        return self.rev_cache.oldest_rev
 
     def youngest_rev(self):
-        return self.rev_cache[0]
+        return self.rev_cache.youngest_rev
 
     def history_relative_rev(self, sha, rel_pos):
         db = self.get_commits()
@@ -416,7 +462,7 @@ class Storage:
         "verify/lookup given revision object and return a sha id or None if lookup failed"
         rev = str(rev)
 
-        db, tag_db = self.rev_cache[2:4]
+        _rev_cache = self.rev_cache
 
         if GitCore.is_sha(rev):
             # maybe it's a short or full rev
@@ -429,10 +475,10 @@ class Storage:
         if not rc:
             return None
 
-        if db.has_key(rc):
+        if rc in _rev_cache.rev_dict:
             return rc
 
-        if rc in tag_db:
+        if rc in _rev_cache.tag_set:
             sha=self.repo.cat_file("tag", rc).split(None, 2)[:2]
             if sha[0] != 'object':
                 self.logger.debug("unexpected result from 'git-cat-file tag %s'" % rc)
@@ -450,13 +496,13 @@ class Storage:
         if min_len < self.__SREV_MIN:
             min_len = self.__SREV_MIN
 
-        db, tag_db, sdb = self.rev_cache[2:5]
+        _rev_cache = self.rev_cache
 
-        if rev not in db:
+        if rev not in _rev_cache.rev_dict:
             return None
 
         srev = rev[:min_len]
-        srevs = set(sdb[self.__rev_key(rev)])
+        srevs = set(_rev_cache.srev_dict[self.__rev_key(rev)])
 
         if len(srevs) == 1:
             return srev # we already got a unique id
@@ -475,17 +521,18 @@ class Storage:
     def fullrev(self, srev):
         "try to reverse shortrev()"
         srev = str(srev)
-        db, tag_db, sdb = self.rev_cache[2:5]
+
+        _rev_cache = self.rev_cache
 
         # short-cut
-        if len(srev) == 40 and srev in db:
+        if len(srev) == 40 and srev in _rev_cache.rev_dict:
             return srev
 
         if not GitCore.is_sha(srev):
             return None
 
         try:
-            srevs = sdb[self.__rev_key(srev)]
+            srevs = _rev_cache.srev_dict[self.__rev_key(srev)]
         except KeyError:
             return None
 
@@ -496,7 +543,7 @@ class Storage:
         return None
 
     def get_tags(self):
-        return [e.strip() for e in self.repo.tag("-l").splitlines()]
+        return [ e.strip() for e in self.repo.tag("-l").splitlines() ]
 
     def ls_tree(self, rev, path=""):
         rev = rev and str(rev) or 'HEAD' # paranoia
@@ -579,20 +626,25 @@ class Storage:
         except KeyError:
             return []
 
-    def children_recursive(self, sha):
-        db = self.get_commits()
+    def children_recursive(self, sha, rev_dict=None):
+        """
+        Recursively traverse children in breadth-first order
+        """
+
+        if rev_dict is None:
+            rev_dict = self.get_commits()
 
         work_list = deque()
         seen = set()
 
-        seen.update(db[sha][0])
-        work_list.extend(db[sha][0])
+        seen.update(rev_dict[sha][0])
+        work_list.extend(rev_dict[sha][0])
 
         while work_list:
             p = work_list.popleft()
             yield p
 
-            _children = set(db[p][0]) - seen
+            _children = set(rev_dict[p][0]) - seen
 
             seen.update(_children)
             work_list.extend(_children)
@@ -634,9 +686,14 @@ class Storage:
 
     def rev_is_anchestor_of(self, rev1, rev2):
         """return True if rev2 is successor of rev1"""
+
         rev1 = rev1.strip()
         rev2 = rev2.strip()
-        return rev2 in self.children_recursive(rev1)
+
+        rev_dict = self.get_commits()
+
+        return (rev2 in rev_dict and
+                rev2 in self.children_recursive(rev1, rev_dict))
 
     def blame(self, commit_sha, path):
         in_metadata = False
