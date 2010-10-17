@@ -21,6 +21,7 @@ from threading import Lock
 from subprocess import Popen, PIPE
 from operator import itemgetter
 import cStringIO
+import codecs
 
 __all__ = ["git_version", "GitError", "GitErrorSha", "Storage", "StorageFactory"]
 
@@ -120,14 +121,14 @@ class StorageFactory(object):
     __dict_nonweak = dict()
     __dict_lock = Lock()
 
-    def __init__(self, repo, log, weak=True, git_bin='git'):
+    def __init__(self, repo, log, weak=True, git_bin='git', git_fs_encoding=None):
         self.logger = log
 
         with StorageFactory.__dict_lock:
             try:
                 i = StorageFactory.__dict[repo]
             except KeyError:
-                i = Storage(repo, log, git_bin)
+                i = Storage(repo, log, git_bin, git_fs_encoding)
                 StorageFactory.__dict[repo] = i
 
                 # create or remove additional reference depending on 'weak' argument
@@ -239,8 +240,37 @@ class Storage(object):
                            " (tried to execute/parse '%s --version' but got %s)"
                            % (git_bin, repr(e)))
 
-    def __init__(self, git_dir, log, git_bin='git'):
+    def __init__(self, git_dir, log, git_bin='git', git_fs_encoding=None):
+        """
+        Initialize PyGit.Storage instance
+
+        `git_dir`: path to .git folder;
+                this setting is not affected by the `git_fs_encoding` setting
+
+        `log`: logger instance
+
+        `git_bin`: path to executable
+                this setting is not affected by the `git_fs_encoding` setting
+
+        `git_fs_encoding`: encoding used for paths stored in git repository;
+                if `None`, no implicit decoding/encoding to/from
+                unicode objects is performed, and bytestrings are
+                returned instead
+
+        """
+
         self.logger = log
+
+        if git_fs_encoding is not None:
+            # validate encoding name
+            codecs.lookup(git_fs_encoding)
+
+            # setup conversion functions
+            self._fs_to_unicode = lambda s: s.decode(git_fs_encoding)
+            self._fs_from_unicode = lambda s: s.encode(git_fs_encoding)
+        else:
+            # pass bytestrings as-is w/o any conversion
+            self._fs_to_unicode = self._fs_from_unicode = lambda s: s
 
         # simple sanity checking
         __git_file_path = partial(os.path.join, git_dir)
@@ -266,8 +296,6 @@ class Storage(object):
         # cache the last 200 commit messages
         self.__commit_msg_cache = SizedDict(200)
         self.__commit_msg_lock = Lock()
-
-
 
     def __del__(self):
         self.logger.debug("PyGIT.Storage instance %d destructed" % id(self))
@@ -580,6 +608,9 @@ class Storage(object):
 
     def ls_tree(self, rev, path=""):
         rev = rev and str(rev) or 'HEAD' # paranoia
+
+        path = self._fs_from_unicode(path)
+
         if path.startswith('/'):
             path = path[1:]
 
@@ -596,7 +627,7 @@ class Storage(object):
             else:
                 _size = int(_size)
 
-            return _mode, _type, _sha, _size, fname
+            return _mode, _type, _sha, _size, self._fs_to_unicode(fname)
 
         return [ split_ls_tree_line(e) for e in tree if e ]
 
@@ -702,13 +733,16 @@ class Storage(object):
 
     def last_change(self, sha, path):
         return self.repo.rev_list("--max-count=1",
-                                  sha, "--", path).strip() or None
+                                  sha, "--",
+                                  self._fs_from_unicode(path)).strip() or None
 
     def history(self, sha, path, limit=None):
         if limit is None:
             limit = -1
 
-        tmp = self.repo.rev_list("--max-count=%d" % limit, str(sha), "--", path)
+        tmp = self.repo.rev_list("--max-count=%d" % limit, str(sha), "--",
+                                 self._fs_from_unicode(path))
+
         return [ rev.strip() for rev in tmp.splitlines() ]
 
     def history_timerange(self, start, stop):
@@ -731,6 +765,8 @@ class Storage(object):
 
     def blame(self, commit_sha, path):
         in_metadata = False
+
+        path = self._fs_from_unicode(path)
 
         for line in self.repo.blame("-p", "--", path, str(commit_sha)).splitlines():
             assert line
@@ -756,7 +792,7 @@ class Storage(object):
         # diff-tree returns records with the following structure:
         # :<old-mode> <new-mode> <old-sha> <new-sha> <change> NUL <old-path> NUL [ <new-path> NUL ]
 
-        path = path.strip("/")
+        path = self._fs_from_unicode(path).strip("/")
         diff_tree_args = ["-z", "-r"]
         if find_renames:
             diff_tree_args.append("-M")
@@ -775,11 +811,17 @@ class Storage(object):
             assert not lines[0].startswith(':')
             del lines[0]
 
+        # FIXME: the following code is ugly, needs rewrite
+
         chg = None
 
         def __chg_tuple():
             if len(chg) == 6:
                 chg.append(None)
+            else:
+                chg[6] = self._fs_to_unicode(chg[6])
+            chg[5] = self._fs_to_unicode(chg[5])
+
             assert len(chg) == 7
             return tuple(chg)
 
@@ -793,6 +835,7 @@ class Storage(object):
             else:
                 chg.append(line)
 
+        # handle left-over chg entry
         if chg:
             yield __chg_tuple()
 
