@@ -126,10 +126,8 @@ class GitConnector(Component):
                          title=shorten_line(changeset.message),
                          href=formatter.href.changeset(sha, repos.reponame))
         except Exception, e:
-            errmsg = to_unicode(e)
-
-        return tag.a(label, class_="missing changeset",
-                     title=to_unicode(errmsg), rel="nofollow")
+            return tag.a(label, class_="missing changeset",
+                         title=to_unicode(e), rel="nofollow")
 
     def get_wiki_syntax(self):
         yield (r'(?:\b|!)r?[0-9a-fA-F]{%d,40}\b' % self._wiki_shortrev_len,
@@ -261,9 +259,8 @@ class CsetPropertyRenderer(Component):
                              href=context.href.changeset(sha, repos.reponame))
 
             except Exception, e:
-                errmsg = to_unicode(e)
                 return tag.a(sha, class_="missing changeset",
-                             title=to_unicode(errmsg), rel="nofollow")
+                             title=to_unicode(e), rel="nofollow")
 
         if name == 'Branches':
             branches = props[name]
