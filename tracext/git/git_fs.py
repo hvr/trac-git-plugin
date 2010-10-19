@@ -35,8 +35,10 @@ if not sys.version_info[:2] >= (2, 5):
 import PyGIT
 
 
-# for some reason CachedRepository doesn't pass-through short_rev()s
+# for some reason CachedRepository doesn't pass-through short_rev()s or display_rev()s
 class CachedRepository2(CachedRepository):
+    def display_rev(self, rev):
+        return self.short_rev(rev)
     def short_rev(self, path):
         return self.repos.short_rev(path)
     def normalize_rev(self, rev):
