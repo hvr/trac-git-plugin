@@ -19,7 +19,7 @@ from trac.util.text import to_unicode
 from trac.versioncontrol.api import \
      Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
 from trac.wiki import IWikiSyntaxProvider
-from trac.versioncontrol.cache import CachedRepository
+from trac.versioncontrol.cache import CachedRepository, CachedChangeset
 from trac.versioncontrol.web_ui import IPropertyRenderer
 from trac.config import BoolOption, IntOption, PathOption, Option
 from trac.web.chrome import Chrome
@@ -46,7 +46,16 @@ class CachedRepository2(CachedRepository):
         if normrev is None:
             raise NoSuchChangeset(rev)
         return normrev
+    def get_changeset(self, rev):
+        return CachedChangeset2(self, self.normalize_rev(rev), self.env)
 
+class CachedChangeset2(CachedChangeset):
+    def get_branches(self):
+        _rev = self.rev
+
+        return [ (k, v == _rev) for k, v in 
+                    self.repos.repos.git.get_branch_contains(_rev, resolve=True) ]
+                                                 
 
 def _last_iterable(iterable):
     "helper for detecting last iteration in for-loop"
