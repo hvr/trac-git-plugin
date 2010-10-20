@@ -35,12 +35,19 @@ if not sys.version_info[:2] >= (2, 5):
 import PyGIT
 
 
-# for some reason CachedRepository doesn't pass-through short_rev()s or display_rev()s
-class CachedRepository2(CachedRepository):
+class GitCachedRepository(CachedRepository):
+    """
+    Git-specific cached repository
+
+    Passes through {display,short,normalize}_rev
+    """
+
     def display_rev(self, rev):
         return self.short_rev(rev)
+
     def short_rev(self, path):
         return self.repos.short_rev(path)
+
     def normalize_rev(self, rev):
         if not rev:
             return self.repos.get_youngest_rev()
@@ -228,7 +235,7 @@ class GitConnector(Component):
                               )
 
         if self._cached_repository:
-            repos = CachedRepository2(self.env, repos, self.log)
+            repos = GitCachedRepository(self.env, repos, self.log)
             self.log.debug("enabled CachedRepository for '%s'" % dir)
         else:
             self.log.debug("disabled CachedRepository for '%s'" % dir)
