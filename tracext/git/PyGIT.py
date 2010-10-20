@@ -503,11 +503,6 @@ class Storage(object):
 
         if rc in _rev_cache.rev_dict:
             return rc
-        elif GitCore.is_sha(rc):
-            # rev-parse returned a sha, it's possible the db is just out of date
-            # Flag the db for rebuilding, and try again
-            self.__rev_cache = None
-            return self.verifyrev(rev)
 
         if rc in _rev_cache.tag_set:
             sha = self.repo.cat_file("tag", rc).split(None, 2)[:2]
@@ -515,7 +510,6 @@ class Storage(object):
                 self.logger.debug("unexpected result from 'git-cat-file tag %s'" % rc)
                 return None
             return sha[1]
-        # XXX might need a "db is out of date" branch here as well
 
         return None
 
