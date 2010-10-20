@@ -55,16 +55,23 @@ class GitCachedRepository(CachedRepository):
         if normrev is None:
             raise NoSuchChangeset(rev)
         return normrev
-    def get_changeset(self, rev):
-        return CachedChangeset2(self, self.normalize_rev(rev), self.env)
 
-class CachedChangeset2(CachedChangeset):
+    def get_changeset(self, rev):
+        return GitCachedChangeset(self, self.normalize_rev(rev), self.env)
+
+
+class GitCachedChangeset(CachedChangeset):
+    """
+    Git-specific cached changeset
+
+    Handles get_branches()
+    """
     def get_branches(self):
         _rev = self.rev
 
-        return [ (k, v == _rev) for k, v in 
-                    self.repos.repos.git.get_branch_contains(_rev, resolve=True) ]
-                                                 
+        return [ (k, v == _rev) for k, v in
+                 self.repos.repos.git.get_branch_contains(_rev, resolve=True) ]
+
 
 def _last_iterable(iterable):
     "helper for detecting last iteration in for-loop"
