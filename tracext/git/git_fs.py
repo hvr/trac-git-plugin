@@ -440,6 +440,12 @@ class GitRepository(Repository):
     def previous_rev(self, rev, path=''):
         return self.git.hist_prev_revision(rev)
 
+    def parent_revs(self, rev):
+        return self.git.parents(rev)
+
+    def child_revs(self, rev):
+        return self.git.children(rev)
+
     def rev_older_than(self, rev1, rev2):
         rc = self.git.rev_is_anchestor_of(rev1, rev2)
         return rc
