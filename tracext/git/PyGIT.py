@@ -262,9 +262,6 @@ class Storage(object):
         self.__commit_msg_cache = SizedDict(200)
         self.__commit_msg_lock = Lock()
 
-    def __del__(self):
-        self.logger.debug("PyGIT.Storage instance %d destructed" % id(self))
-
     #
     # cache handling
     #
