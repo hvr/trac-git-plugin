@@ -402,6 +402,9 @@ class GitRepository(Repository):
         for t in self.git.get_tags():
             yield 'tags', t, '/', t
 
+    def get_path_url(self, path, rev):
+        return self.params.get('url')
+
     def get_changesets(self, start, stop):
         for rev in self.git.history_timerange(to_timestamp(start), to_timestamp(stop)):
             yield self.get_changeset(rev)
