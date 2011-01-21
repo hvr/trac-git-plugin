@@ -17,7 +17,8 @@ from trac.util import TracError, shorten_line
 from trac.util.datefmt import FixedOffset, to_timestamp, format_datetime
 from trac.util.text import to_unicode
 from trac.versioncontrol.api import \
-     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode
+     Changeset, Node, Repository, IRepositoryConnector, NoSuchChangeset, NoSuchNode, \
+     IRepositoryProvider
 from trac.wiki import IWikiSyntaxProvider
 from trac.versioncontrol.cache import CachedRepository, CachedChangeset
 from trac.versioncontrol.web_ui import IPropertyRenderer
@@ -28,6 +29,7 @@ from genshi.builder import tag
 
 from datetime import datetime
 import sys
+import os
 
 if not sys.version_info[:2] >= (2, 5):
     raise TracError("Python >= 2.5 dependancy not met")
@@ -681,3 +683,30 @@ class GitChangeset(Changeset):
 
         return [ (k, v == _rev)
                  for k, v in self.repos.git.get_branch_contains(_rev, resolve=True) ]
+
+class GitwebProjectsRepositoryProvider(Component):
+    implements(IRepositoryProvider)
+
+    projects_list = PathOption('git', 'projects_list', doc='Path to a gitweb-formatted projects.list')
+    projects_base = PathOption('git', 'projects_base', doc='Path to the base of your git projects')
+    projects_url = Option('git', 'projects_url', doc='Template for project URLs. %s will be replaced with the repo name')
+
+    def get_repositories(self):
+        if not self.projects_list:
+            return
+
+        for line in open(self.projects_list):
+            line = line.strip()
+            name = line
+            if name.endswith('.git'):
+                name = name[:-4]
+            repo = {
+                'dir': os.path.join(self.projects_base, line),
+                'type': 'git',
+            }
+            description_path = os.path.join(repo['dir'], 'description')
+            if os.path.exists(description_path):
+                repo['description'] = open(description_path).read().strip()
+            if self.projects_url:
+                repo['url'] = self.projects_url % name
+            yield name, repo
