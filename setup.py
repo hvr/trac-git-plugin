@@ -10,7 +10,7 @@ setup(name='TracGit',
       keywords='trac scm plugin git',
       url="http://trac-hacks.org/wiki/GitPlugin",
       version='0.12.0.5',
-      license="GPL",
+      license="BSD",
       long_description="""
       This Trac 0.12 plugin provides support for the GIT SCM.
 
