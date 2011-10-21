@@ -387,8 +387,8 @@ class GitRepository(Repository):
     def short_rev(self, rev):
         return self.git.shortrev(self.normalize_rev(rev), min_len=self._shortrev_len)
 
-    def get_node(self, path, rev=None):
-        return GitNode(self, path, rev, self.log)
+    def get_node(self, path, rev=None, historian=None):
+        return GitNode(self, path, rev, self.log, None, historian)
 
     def get_quickjump_entries(self, rev):
         for bname, bsha in self.git.get_branches():
@@ -412,24 +412,26 @@ class GitRepository(Repository):
         if old_path != new_path:
             raise TracError("not supported in git_fs")
 
-        for chg in self.git.diff_tree(old_rev, new_rev, self.normalize_path(new_path)):
-            mode1, mode2, obj1, obj2, action, path, path2 = chg
+        with self.git.get_historian(old_rev, old_path.strip('/')) as old_historian:
+            with self.git.get_historian(new_rev, new_path.strip('/')) as new_historian:
+                for chg in self.git.diff_tree(old_rev, new_rev, self.normalize_path(new_path)):
+                    mode1, mode2, obj1, obj2, action, path, path2 = chg
 
-            kind = Node.FILE
-            if mode2.startswith('04') or mode1.startswith('04'):
-                kind = Node.DIRECTORY
+                    kind = Node.FILE
+                    if mode2.startswith('04') or mode1.startswith('04'):
+                        kind = Node.DIRECTORY
 
-            change = GitChangeset.action_map[action]
+                    change = GitChangeset.action_map[action]
 
-            old_node = None
-            new_node = None
+                    old_node = None
+                    new_node = None
 
-            if change != Changeset.ADD:
-                old_node = self.get_node(path, old_rev)
-            if change != Changeset.DELETE:
-                new_node = self.get_node(path, new_rev)
+                    if change != Changeset.ADD:
+                        old_node = self.get_node(path, old_rev, old_historian)
+                    if change != Changeset.DELETE:
+                        new_node = self.get_node(path, new_rev, new_historian)
 
-            yield old_node, new_node, kind, change
+                    yield old_node, new_node, kind, change
 
     def next_rev(self, rev, path=''):
         return self.git.hist_next_revision(rev)
@@ -469,7 +471,7 @@ class GitRepository(Repository):
                 rev_callback(rev)
 
 class GitNode(Node):
-    def __init__(self, repos, path, rev, log, ls_tree_info=None):
+    def __init__(self, repos, path, rev, log, ls_tree_info=None, historian=None):
         self.log = log
         self.repos = repos
         self.fs_sha = None # points to either tree or blobs
@@ -491,7 +493,7 @@ class GitNode(Node):
             self.fs_perm, k, self.fs_sha, self.fs_size, _ = ls_tree_info
 
             # fix-up to the last commit-rev that touched this node
-            rev = repos.git.last_change(rev, p)
+            rev = repos.git.last_change(rev, p, historian)
 
             if k == 'tree':
                 pass
@@ -537,8 +539,9 @@ class GitNode(Node):
         if not self.isdir:
             return
 
-        for ent in self.repos.git.ls_tree(self.rev, self.__git_path()):
-            yield GitNode(self.repos, ent[-1], self.rev, self.log, ent)
+        with self.repos.git.get_historian(self.rev, self.path.strip('/')) as historian:
+            for ent in self.repos.git.ls_tree(self.rev, self.__git_path()):
+                yield GitNode(self.repos, ent[-1], self.rev, self.log, ent, historian)
 
     def get_content_type(self):
         if self.isdir:

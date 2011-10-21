@@ -14,6 +14,7 @@ from functools import partial
 from threading import Lock
 from subprocess import Popen, PIPE
 from operator import itemgetter
+from contextlib import contextmanager
 import cStringIO
 import codecs
 
@@ -70,8 +71,11 @@ class GitCore(object):
     def cat_file_batch(self):
         return self.__pipe('cat-file', '--batch', stdin=PIPE, stdout=PIPE)
 
+    def log_pipe(self, *cmd_args):
+        return self.__pipe('log', *cmd_args, stdout=PIPE)
+
     def __getattr__(self, name):
-        if name[0] == '_' or name in ['cat_file_batch']:
+        if name[0] == '_' or name in ['cat_file_batch', 'log_pipe']:
             raise AttributeError, name
         return partial(self.__execute, name.replace('_','-'))
 
@@ -713,7 +717,52 @@ class Storage(object):
         rev = self.repo.rev_list("--max-count=1", "--topo-order", "--all").strip()
         return self.__rev_cache_sync(rev)
 
-    def last_change(self, sha, path):
+    @contextmanager
+    def get_historian(self, sha, base_path):
+        p = []
+        change = {}
+        next_path = []
+
+        def name_status_gen():
+            p[:] = [self.repo.log_pipe('--pretty=format:%n%H', '--name-status',
+                                       sha, '--', base_path)]
+            f = p[0].stdout
+            for l in f:
+                if l == '\n': continue
+                old_sha = l.rstrip('\n')
+                for l in f:
+                    if l == '\n': break
+                    _, path = l.rstrip('\n').split('\t', 1)
+                    while path not in change:
+                        change[path] = old_sha
+                        if next_path == [path]: yield old_sha
+                        try:
+                            path, _ = path.rsplit('/', 1)
+                        except ValueError:
+                            break
+            f.close()
+            p[0].terminate()
+            p[0].wait()
+            p[:] = []
+            while True: yield None
+        gen = name_status_gen()
+
+        def historian(path):
+            try:
+                return change[path]
+            except KeyError:
+                next_path[:] = [path]
+                return gen.next()
+        yield historian
+
+        if p:
+            p[0].stdout.close()
+            p[0].terminate()
+            p[0].wait()
+
+    def last_change(self, sha, path, historian=None):
+        if historian is not None:
+            return historian(path)
         return self.repo.rev_list("--max-count=1",
                                   sha, "--",
                                   self._fs_from_unicode(path)).strip() or None
