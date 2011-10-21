@@ -48,17 +48,19 @@ class GitCore(object):
 
         return cmd
 
+    def __pipe(self, git_cmd, *cmd_args, **kw):
+        if sys.platform == "win32":
+            return Popen(self.__build_git_cmd(git_cmd, *cmd_args), **kw)
+        else:
+            return Popen(self.__build_git_cmd(git_cmd, *cmd_args),
+                         close_fds=True, **kw)
+
     def __execute(self, git_cmd, *cmd_args):
         "execute git command and return file-like object of stdout"
 
         #print >>sys.stderr, "DEBUG:", git_cmd, cmd_args
 
-        if sys.platform == "win32":
-            p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
-                      stdin=None, stdout=PIPE, stderr=PIPE)
-        else:
-            p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
-                      stdin=None, stdout=PIPE, stderr=PIPE, close_fds=True)
+        p = self.__pipe(git_cmd, *cmd_args, stdout=PIPE, stderr=PIPE)
 
         stdout_data, stderr_data = p.communicate()
         #TODO, do something with p.returncode, e.g. raise exception
