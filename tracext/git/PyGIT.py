@@ -14,6 +14,7 @@ from functools import partial
 from threading import Lock
 from subprocess import Popen, PIPE
 from operator import itemgetter
+from contextlib import contextmanager
 import cStringIO
 import codecs
 
@@ -48,24 +49,34 @@ class GitCore(object):
 
         return cmd
 
+    def __pipe(self, git_cmd, *cmd_args, **kw):
+        if sys.platform == "win32":
+            return Popen(self.__build_git_cmd(git_cmd, *cmd_args), **kw)
+        else:
+            return Popen(self.__build_git_cmd(git_cmd, *cmd_args),
+                         close_fds=True, **kw)
+
     def __execute(self, git_cmd, *cmd_args):
         "execute git command and return file-like object of stdout"
 
         #print >>sys.stderr, "DEBUG:", git_cmd, cmd_args
 
-        if sys.platform == "win32":
-            p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
-                      stdin=None, stdout=PIPE, stderr=PIPE)
-        else:
-            p = Popen(self.__build_git_cmd(git_cmd, *cmd_args),
-                      stdin=None, stdout=PIPE, stderr=PIPE, close_fds=True)
+        p = self.__pipe(git_cmd, *cmd_args, stdout=PIPE, stderr=PIPE)
 
         stdout_data, stderr_data = p.communicate()
         #TODO, do something with p.returncode, e.g. raise exception
 
         return stdout_data
 
+    def cat_file_batch(self):
+        return self.__pipe('cat-file', '--batch', stdin=PIPE, stdout=PIPE)
+
+    def log_pipe(self, *cmd_args):
+        return self.__pipe('log', *cmd_args, stdout=PIPE)
+
     def __getattr__(self, name):
+        if name[0] == '_' or name in ['cat_file_batch', 'log_pipe']:
+            raise AttributeError, name
         return partial(self.__execute, name.replace('_','-'))
 
     __is_sha_pat = re.compile(r'[0-9A-Fa-f]*$')
@@ -253,6 +264,13 @@ class Storage(object):
         # cache the last 200 commit messages
         self.__commit_msg_cache = SizedDict(200)
         self.__commit_msg_lock = Lock()
+
+        self.__cat_file_pipe = None
+
+    def __del__(self):
+        if self.__cat_file_pipe is not None:
+            self.__cat_file_pipe.stdin.close()
+            self.__cat_file_pipe.wait()
 
     #
     # cache handling
@@ -473,6 +491,20 @@ class Storage(object):
         "get current HEAD commit id"
         return self.verifyrev("HEAD")
 
+    def cat_file(self, kind, sha):
+        if self.__cat_file_pipe is None:
+            self.__cat_file_pipe = self.repo.cat_file_batch()
+
+        self.__cat_file_pipe.stdin.write(sha + '\n')
+        self.__cat_file_pipe.stdin.flush()
+        _sha, _type, _size = self.__cat_file_pipe.stdout.readline().split()
+
+        if _type != kind:
+            raise TracError("internal error (got unexpected object kind '%s')" % k)
+
+        size = int(_size)
+        return self.__cat_file_pipe.stdout.read(size + 1)[:size]
+
     def verifyrev(self, rev):
         "verify/lookup given revision object and return a sha id or None if lookup failed"
         rev = str(rev)
@@ -494,7 +526,7 @@ class Storage(object):
             return rc
 
         if rc in _rev_cache.tag_set:
-            sha = self.repo.cat_file("tag", rc).split(None, 2)[:2]
+            sha = self.cat_file("tag", rc).split(None, 2)[:2]
             if sha[0] != 'object':
                 self.logger.debug("unexpected result from 'git-cat-file tag %s'" % rc)
                 return None
@@ -604,7 +636,7 @@ class Storage(object):
                 return result[0], dict(result[1])
 
             # cache miss
-            raw = self.repo.cat_file("commit", commit_id)
+            raw = self.cat_file("commit", commit_id)
             raw = unicode(raw, self.get_commit_encoding(), 'replace')
             lines = raw.splitlines()
 
@@ -625,7 +657,7 @@ class Storage(object):
             return result[0], dict(result[1])
 
     def get_file(self, sha):
-        return cStringIO.StringIO(self.repo.cat_file("blob", str(sha)))
+        return cStringIO.StringIO(self.cat_file("blob", str(sha)))
 
     def get_obj_size(self, sha):
         sha = str(sha)
@@ -685,7 +717,52 @@ class Storage(object):
         rev = self.repo.rev_list("--max-count=1", "--topo-order", "--all").strip()
         return self.__rev_cache_sync(rev)
 
-    def last_change(self, sha, path):
+    @contextmanager
+    def get_historian(self, sha, base_path):
+        p = []
+        change = {}
+        next_path = []
+
+        def name_status_gen():
+            p[:] = [self.repo.log_pipe('--pretty=format:%n%H', '--name-status',
+                                       sha, '--', base_path)]
+            f = p[0].stdout
+            for l in f:
+                if l == '\n': continue
+                old_sha = l.rstrip('\n')
+                for l in f:
+                    if l == '\n': break
+                    _, path = l.rstrip('\n').split('\t', 1)
+                    while path not in change:
+                        change[path] = old_sha
+                        if next_path == [path]: yield old_sha
+                        try:
+                            path, _ = path.rsplit('/', 1)
+                        except ValueError:
+                            break
+            f.close()
+            p[0].terminate()
+            p[0].wait()
+            p[:] = []
+            while True: yield None
+        gen = name_status_gen()
+
+        def historian(path):
+            try:
+                return change[path]
+            except KeyError:
+                next_path[:] = [path]
+                return gen.next()
+        yield historian
+
+        if p:
+            p[0].stdout.close()
+            p[0].terminate()
+            p[0].wait()
+
+    def last_change(self, sha, path, historian=None):
+        if historian is not None:
+            return historian(path)
         return self.repo.rev_list("--max-count=1",
                                   sha, "--",
                                   self._fs_from_unicode(path)).strip() or None
